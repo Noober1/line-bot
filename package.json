@@ -13,5 +13,8 @@
   },
   "peerDependencies": {
     "typescript": "^7"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "11.3.0"
   }
 }

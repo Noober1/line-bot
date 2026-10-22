@@ -40,6 +40,22 @@ describe("handleEvents", () => {
     expect(reply).toHaveBeenCalledWith("rt-b", "b");
   });
 
+  test("replies to a command instead of echoing it", async () => {
+    const reply = okReply();
+    await handleEvents([textEvent("/ping", "rt-1")], reply);
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(reply).toHaveBeenCalledWith("rt-1", "pong");
+  });
+
+  test("answers an unknown command with a friendly error", async () => {
+    const reply = okReply();
+    await handleEvents([textEvent("/foo", "rt-1")], reply);
+    expect(reply).toHaveBeenCalledWith(
+      "rt-1",
+      "Perintah /foo tidak dikenal. Ketik /help untuk daftar perintah.",
+    );
+  });
+
   test("ignores non-text messages", async () => {
     const reply = okReply();
     const sticker = {

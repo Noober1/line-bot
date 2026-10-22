@@ -1,4 +1,5 @@
 import type { webhook } from "@line/bot-sdk";
+import { parseCommand, runCommand } from "./commands";
 
 export type Reply = (replyToken: string, text: string) => Promise<void>;
 
@@ -16,5 +17,7 @@ async function handleEvent(event: webhook.Event, reply: Reply): Promise<void> {
   if (event.type !== "message" || event.message.type !== "text" || !event.replyToken) {
     return;
   }
-  await reply(event.replyToken, event.message.text);
+  const { text } = event.message;
+  const command = parseCommand(text);
+  await reply(event.replyToken, command ? runCommand(command) : text);
 }

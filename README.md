@@ -22,7 +22,8 @@ Health check: `GET /health` returns `{"status":"ok"}`.
 ## Webhook
 
 `POST /webhook` receives LINE events. It checks the `x-line-signature` header
-(401 if missing or wrong), returns 200 right away, then echoes every text message.
+(401 if missing or wrong), returns 200 right away, then answers every text message:
+commands (see below) get their reply, any other text is echoed back.
 
 Dev with a real LINE channel:
 
@@ -51,3 +52,15 @@ message text), for example `Ignored join event from group Cxxxx (unknown user)`.
 
 If both lists are empty the bot starts, ignores everything, and prints a warning.
 Restart the bot after editing `.env`.
+
+## Commands
+
+A text message that starts with `/` is a command. Names are case-insensitive.
+
+| Command | Reply |
+|---|---|
+| `/help` | list of commands |
+| `/ping` | `pong` |
+| `/reset` | clears the chat history (nothing is stored yet) |
+
+An unknown command gets `Perintah /<name> tidak dikenal. Ketik /help untuk daftar perintah.`

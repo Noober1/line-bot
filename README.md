@@ -29,7 +29,7 @@ Dev with a real LINE channel:
 
 ```bash
 bun run dev
-cloudflared tunnel --url http://localhost:3000
+bun run tunnel   # cloudflared tunnel --url http://localhost:3000
 ```
 
 Set `https://<tunnel-host>/webhook` as the Webhook URL in LINE Developers Console

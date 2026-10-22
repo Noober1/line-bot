@@ -7,12 +7,29 @@ const validEnv = {
 };
 
 describe("loadConfig", () => {
-  test("returns config with default port when PORT is unset", () => {
+  test("returns config with default port and empty allowlist when optional keys are unset", () => {
     expect(loadConfig(validEnv)).toEqual({
       port: 3000,
       lineChannelSecret: "secret",
       lineChannelAccessToken: "token",
+      allowlist: { userIds: new Set(), groupIds: new Set() },
     });
+  });
+
+  test("parses comma-separated allowlists, trimming spaces and dropping blanks", () => {
+    const config = loadConfig({
+      ...validEnv,
+      ALLOWED_USER_IDS: " U1 , U2,,",
+      ALLOWED_GROUP_IDS: "C1",
+    });
+    expect(config.allowlist.userIds).toEqual(new Set(["U1", "U2"]));
+    expect(config.allowlist.groupIds).toEqual(new Set(["C1"]));
+  });
+
+  test("blank allowlist values give empty sets", () => {
+    const config = loadConfig({ ...validEnv, ALLOWED_USER_IDS: "  ", ALLOWED_GROUP_IDS: " , " });
+    expect(config.allowlist.userIds.size).toBe(0);
+    expect(config.allowlist.groupIds.size).toBe(0);
   });
 
   test("uses PORT when set", () => {

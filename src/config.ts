@@ -1,7 +1,10 @@
+import type { Allowlist } from "./allowlist";
+
 export type Config = {
   readonly port: number;
   readonly lineChannelSecret: string;
   readonly lineChannelAccessToken: string;
+  readonly allowlist: Allowlist;
 };
 
 type Env = Record<string, string | undefined>;
@@ -25,5 +28,13 @@ export function loadConfig(env: Env): Config {
     port,
     lineChannelSecret: env.LINE_CHANNEL_SECRET!,
     lineChannelAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN!,
+    allowlist: {
+      userIds: parseIdList(env.ALLOWED_USER_IDS),
+      groupIds: parseIdList(env.ALLOWED_GROUP_IDS),
+    },
   };
+}
+
+function parseIdList(value: string | undefined): ReadonlySet<string> {
+  return new Set((value ?? "").split(",").map((id) => id.trim()).filter(Boolean));
 }

@@ -1,8 +1,11 @@
 export type Command = { readonly name: string; readonly args: string };
 
+// What a command may act on, bound to the chat the command came from.
+export type CommandContext = { readonly resetHistory: () => void };
+
 type CommandSpec = {
   readonly description: string;
-  readonly run: (args: string) => string;
+  readonly run: (args: string, context: CommandContext) => string;
 };
 
 const MAX_SHOWN_NAME = 32;
@@ -11,8 +14,16 @@ const MAX_SHOWN_NAME = 32;
 const COMMANDS: ReadonlyMap<string, CommandSpec> = new Map<string, CommandSpec>([
   ["help", { description: "tampilkan daftar perintah", run: () => helpText() }],
   ["ping", { description: "cek apakah bot aktif", run: () => "pong" }],
-  // shortcut: nothing is stored yet, so there is nothing to delete; task 6 (session store) wires the real delete.
-  ["reset", { description: "hapus riwayat chat", run: () => "Riwayat chat sudah dihapus." }],
+  [
+    "reset",
+    {
+      description: "hapus riwayat chat",
+      run: (_args, context) => {
+        context.resetHistory();
+        return "Riwayat chat sudah dihapus.";
+      },
+    },
+  ],
 ]);
 
 // Text starting with "/" (after trimming) is a command. The name is case-insensitive.
@@ -25,9 +36,9 @@ export function parseCommand(text: string): Command | null {
   return { name: name.toLowerCase(), args };
 }
 
-export function runCommand(command: Command): string {
+export function runCommand(command: Command, context: CommandContext): string {
   const spec = COMMANDS.get(command.name);
-  return spec ? spec.run(command.args) : unknownCommandText(command.name);
+  return spec ? spec.run(command.args, context) : unknownCommandText(command.name);
 }
 
 function helpText(): string {

@@ -61,6 +61,18 @@ A text message that starts with `/` is a command. Names are case-insensitive.
 |---|---|
 | `/help` | list of commands |
 | `/ping` | `pong` |
-| `/reset` | clears the chat history (nothing is stored yet) |
+| `/reset` | clears the chat history of this chat (in a group: the whole group's) |
 
 An unknown command gets `Perintah /<name> tidak dikenal. Ketik /help untuk daftar perintah.`
+
+## Chat history
+
+Every non-command text and the bot's reply are saved in a SQLite file
+(`DATABASE_PATH`, default `bot.sqlite` in the working directory; git-ignored).
+
+- One history per chat: per user in a 1:1 chat, shared by everyone in a group.
+- Only the newest 100 messages per chat are kept.
+- Commands are not saved. A message whose reply failed is not saved.
+- `/reset` deletes the history of the chat it is sent in.
+
+The file holds chat text in plain form. Keep it private and back it up like `.env`.

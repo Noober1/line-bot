@@ -5,6 +5,7 @@ export type Config = {
   readonly lineChannelSecret: string;
   readonly lineChannelAccessToken: string;
   readonly allowlist: Allowlist;
+  readonly databasePath: string;
 };
 
 type Env = Record<string, string | undefined>;
@@ -12,6 +13,7 @@ type Env = Record<string, string | undefined>;
 const REQUIRED_KEYS = ["LINE_CHANNEL_SECRET", "LINE_CHANNEL_ACCESS_TOKEN"] as const;
 const DEFAULT_PORT = 3000;
 const MAX_PORT = 65535;
+const DEFAULT_DATABASE_PATH = "bot.sqlite";
 
 export function loadConfig(env: Env): Config {
   const missing = REQUIRED_KEYS.filter((key) => !env[key]?.trim());
@@ -32,6 +34,7 @@ export function loadConfig(env: Env): Config {
       userIds: parseIdList(env.ALLOWED_USER_IDS),
       groupIds: parseIdList(env.ALLOWED_GROUP_IDS),
     },
+    databasePath: env.DATABASE_PATH?.trim() || DEFAULT_DATABASE_PATH,
   };
 }
 

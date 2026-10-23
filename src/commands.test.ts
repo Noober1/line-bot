@@ -1,5 +1,7 @@
-import { describe, expect, test } from "bun:test";
-import { parseCommand, runCommand } from "./commands";
+import { describe, expect, mock, test } from "bun:test";
+import { parseCommand, runCommand, type CommandContext } from "./commands";
+
+const noopContext: CommandContext = { resetHistory: () => {} };
 
 describe("parseCommand", () => {
   test("returns null for plain text", () => {
@@ -44,15 +46,15 @@ describe("parseCommand", () => {
 
 describe("runCommand", () => {
   test("/ping replies pong", () => {
-    expect(runCommand({ name: "ping", args: "" })).toBe("pong");
+    expect(runCommand({ name: "ping", args: "" }, noopContext)).toBe("pong");
   });
 
   test("ignores args of commands that take none", () => {
-    expect(runCommand({ name: "ping", args: "abc" })).toBe("pong");
+    expect(runCommand({ name: "ping", args: "abc" }, noopContext)).toBe("pong");
   });
 
   test("/help lists every command", () => {
-    expect(runCommand({ name: "help", args: "" })).toBe(
+    expect(runCommand({ name: "help", args: "" }, noopContext)).toBe(
       [
         "Daftar perintah:",
         "/help - tampilkan daftar perintah",
@@ -62,27 +64,37 @@ describe("runCommand", () => {
     );
   });
 
-  test("/reset confirms the history is cleared", () => {
-    expect(runCommand({ name: "reset", args: "" })).toBe("Riwayat chat sudah dihapus.");
+  test("/reset clears the history and confirms", () => {
+    const resetHistory = mock(() => {});
+    expect(runCommand({ name: "reset", args: "" }, { resetHistory })).toBe("Riwayat chat sudah dihapus.");
+    expect(resetHistory).toHaveBeenCalledTimes(1);
+  });
+
+  test("other commands do not touch the history", () => {
+    const resetHistory = mock(() => {});
+    runCommand({ name: "ping", args: "" }, { resetHistory });
+    runCommand({ name: "help", args: "" }, { resetHistory });
+    runCommand({ name: "foo", args: "" }, { resetHistory });
+    expect(resetHistory).not.toHaveBeenCalled();
   });
 
   test("unknown command gets a friendly error", () => {
-    expect(runCommand({ name: "foo", args: "" })).toBe(
+    expect(runCommand({ name: "foo", args: "" }, noopContext)).toBe(
       "Perintah /foo tidak dikenal. Ketik /help untuk daftar perintah.",
     );
   });
 
   test("Object.prototype keys are unknown commands", () => {
-    expect(runCommand({ name: "constructor", args: "" })).toBe(
+    expect(runCommand({ name: "constructor", args: "" }, noopContext)).toBe(
       "Perintah /constructor tidak dikenal. Ketik /help untuk daftar perintah.",
     );
-    expect(runCommand({ name: "__proto__", args: "" })).toBe(
+    expect(runCommand({ name: "__proto__", args: "" }, noopContext)).toBe(
       "Perintah /__proto__ tidak dikenal. Ketik /help untuk daftar perintah.",
     );
   });
 
   test("a long unknown name is cut to 32 characters", () => {
-    const reply = runCommand({ name: "a".repeat(100), args: "" });
+    const reply = runCommand({ name: "a".repeat(100), args: "" }, noopContext);
     expect(reply).toBe(`Perintah /${"a".repeat(32)}… tidak dikenal. Ketik /help untuk daftar perintah.`);
   });
 });

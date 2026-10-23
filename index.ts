@@ -1,8 +1,10 @@
+import { Database } from "bun:sqlite";
 import { messagingApi } from "@line/bot-sdk";
 import { filterAllowed } from "./src/allowlist";
 import { createApp } from "./src/app";
 import { loadConfig, type Config } from "./src/config";
 import { handleEvents, type Reply } from "./src/events";
+import { createSessionStore } from "./src/session";
 
 let config: Config;
 try {
@@ -27,9 +29,11 @@ const reply: Reply = async (replyToken, text) => {
   await client.replyMessage({ replyToken, messages: [{ type: "text", text }] });
 };
 
+const sessions = createSessionStore(new Database(config.databasePath));
+
 const app = createApp({
   channelSecret: config.lineChannelSecret,
-  onEvents: (events) => void handleEvents(filterAllowed(events, allowlist), reply),
+  onEvents: (events) => void handleEvents(filterAllowed(events, allowlist), reply, sessions),
 });
 
 const server = Bun.serve({ port: config.port, fetch: app });

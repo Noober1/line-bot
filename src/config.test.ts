@@ -7,12 +7,13 @@ const validEnv = {
 };
 
 describe("loadConfig", () => {
-  test("returns config with default port and empty allowlist when optional keys are unset", () => {
+  test("returns config with defaults when optional keys are unset", () => {
     expect(loadConfig(validEnv)).toEqual({
       port: 3000,
       lineChannelSecret: "secret",
       lineChannelAccessToken: "token",
       allowlist: { userIds: new Set(), groupIds: new Set() },
+      databasePath: "bot.sqlite",
     });
   });
 
@@ -34,6 +35,14 @@ describe("loadConfig", () => {
 
   test("uses PORT when set", () => {
     expect(loadConfig({ ...validEnv, PORT: "8080" }).port).toBe(8080);
+  });
+
+  test("uses DATABASE_PATH when set", () => {
+    expect(loadConfig({ ...validEnv, DATABASE_PATH: " data/chat.sqlite " }).databasePath).toBe("data/chat.sqlite");
+  });
+
+  test("blank DATABASE_PATH falls back to the default", () => {
+    expect(loadConfig({ ...validEnv, DATABASE_PATH: "  " }).databasePath).toBe("bot.sqlite");
   });
 
   test("throws listing every missing required key", () => {

@@ -66,6 +66,7 @@ A text message that starts with `/` is a command. Names are case-insensitive.
 | `/config` | shows or changes your own settings (see "User settings") |
 
 An unknown command gets `Perintah /<name> tidak dikenal. Ketik /help untuk daftar perintah.`
+(in Indonesian; see "Reply language" for the other languages).
 
 ## Chat history
 
@@ -127,8 +128,26 @@ In a group, `/config` changes the settings of the person who sends it, never the
 
 | Setting | Values | Default |
 |---|---|---|
-| `translate` | ISO 639-1 code (`en`, `id`, `ja`, `ko`, `zh`, ...) | `DEFAULT_TRANSLATE_LANG` (`en`); your LINE language once task 7c is done |
+| `translate` | ISO 639-1 code (`en`, `id`, `ja`, `ko`, `zh`, ...) | your LINE app language, else `DEFAULT_TRANSLATE_LANG` (`en`) |
 
-Order: your own value > your LINE app language (from task 7c; not used yet) > `DEFAULT_TRANSLATE_LANG` > `en`.
+Order: your own value > your LINE app language (see "Reply language") > `DEFAULT_TRANSLATE_LANG` > `en`.
 LINE does not send a user ID for some group members (for example LINE desktop users);
 they get `Pengaturan tidak bisa dipakai: LINE tidak mengirim ID kamu.`
+
+## Reply language
+
+The bot's own texts (`/help`, `/reset`, `/config`, `/translate` usage and errors, unknown command)
+come in the sender's LINE app language: `id`, `en`, `ja`, `zh-Hans` or `zh-Hant`. Any other
+language, or an unknown one, gets `DEFAULT_REPLY_LANG` (default `id`). AI chat answers are not
+affected: the AI answers in the language the user writes in.
+
+- The language comes from LINE's Get profile API, only when a command is sent, and is cached per user
+  in SQLite (table `user_languages`) for 7 days.
+- Get profile works only for users who added the bot as a friend. In a group, a member who is not a
+  friend gets `DEFAULT_REPLY_LANG`. The bot logs `Get profile failed for user <id>: 404 - Not Found`
+  and tries again on their next command.
+- LINE leaves out the language when the user has not consented to its privacy policy; that user
+  also gets `DEFAULT_REPLY_LANG`.
+- Each fetch logs `LINE language of user <id>: <tag>` so the mapping can be checked.
+  `zh-TW`, `zh-HK`, `zh-MO` and `zh-Hant` map to `zh-Hant`; other `zh` tags map to `zh-Hans`.
+- The same LINE language is the default target of `/translate` (see "User settings").

@@ -4,7 +4,8 @@ import { createAi } from "./src/ai";
 import { filterAllowed } from "./src/allowlist";
 import { createApp } from "./src/app";
 import { loadConfig, type Config } from "./src/config";
-import { handleEvents, type Reply } from "./src/events";
+import { handleEvents, type Languages, type Reply } from "./src/events";
+import { createLineLanguage } from "./src/language";
 import { createSessionStore } from "./src/session";
 import { createSettingsStore } from "./src/settings";
 
@@ -36,10 +37,15 @@ const sessions = createSessionStore(db);
 const settings = createSettingsStore(db, config.defaultSettings);
 const ai = createAi(config.ai);
 console.log(`AI: model ${config.ai.model} via ${config.ai.baseUrl}`);
+const languages: Languages = {
+  lineLanguage: createLineLanguage(db, async (userId) => (await client.getProfile(userId)).language),
+  defaultLocale: config.defaultLocale,
+};
 
 const app = createApp({
   channelSecret: config.lineChannelSecret,
-  onEvents: (events) => void handleEvents(filterAllowed(events, allowlist), reply, sessions, ai, settings),
+  onEvents: (events) =>
+    void handleEvents(filterAllowed(events, allowlist), reply, sessions, ai, settings, languages),
 });
 
 const server = Bun.serve({ port: config.port, fetch: app });

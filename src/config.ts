@@ -1,5 +1,6 @@
 import type { AiConfig } from "./ai";
 import type { Allowlist } from "./allowlist";
+import { LOCALES, parseLocale, type Locale } from "./language";
 import { parseSettingValue, type Settings } from "./settings";
 
 export type Config = {
@@ -11,6 +12,8 @@ export type Config = {
   readonly ai: AiConfig;
   // Global defaults for per-user settings (/config).
   readonly defaultSettings: Settings;
+  // Reply language when the user's LINE language is unknown or not supported.
+  readonly defaultLocale: Locale;
 };
 
 type Env = Record<string, string | undefined>;
@@ -21,6 +24,7 @@ const MAX_PORT = 65535;
 const DEFAULT_DATABASE_PATH = "bot.sqlite";
 const DEFAULT_AI_BASE_URL = "http://localhost:20128/v1";
 const DEFAULT_TRANSLATE_LANG = "en";
+const DEFAULT_REPLY_LANG: Locale = "id";
 
 export function loadConfig(env: Env): Config {
   const missing = REQUIRED_KEYS.filter((key) => !env[key]?.trim());
@@ -38,6 +42,11 @@ export function loadConfig(env: Env): Config {
     throw new Error(`Invalid DEFAULT_TRANSLATE_LANG: ${env.DEFAULT_TRANSLATE_LANG} (use an ISO 639-1 code)`);
   }
 
+  const defaultLocale = parseLocale(env.DEFAULT_REPLY_LANG?.trim() || DEFAULT_REPLY_LANG);
+  if (!defaultLocale) {
+    throw new Error(`Invalid DEFAULT_REPLY_LANG: ${env.DEFAULT_REPLY_LANG} (use one of: ${LOCALES.join(", ")})`);
+  }
+
   return {
     port,
     lineChannelSecret: env.LINE_CHANNEL_SECRET!,
@@ -53,6 +62,7 @@ export function loadConfig(env: Env): Config {
       model: env.AI_MODEL!.trim(),
     },
     defaultSettings: { translate },
+    defaultLocale,
   };
 }
 

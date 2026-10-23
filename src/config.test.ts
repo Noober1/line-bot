@@ -17,6 +17,7 @@ describe("loadConfig", () => {
       databasePath: "bot.sqlite",
       ai: { baseUrl: "http://localhost:20128/v1", apiKey: undefined, model: "combo-chat" },
       defaultSettings: { translate: "en" },
+      defaultLocale: "id",
     });
   });
 
@@ -80,6 +81,23 @@ describe("loadConfig", () => {
     for (const value of ["xx", "zh-Hant", "japanese"]) {
       expect(() => loadConfig({ ...validEnv, DEFAULT_TRANSLATE_LANG: value })).toThrow(
         `Invalid DEFAULT_TRANSLATE_LANG: ${value} (use an ISO 639-1 code)`,
+      );
+    }
+  });
+
+  test("uses DEFAULT_REPLY_LANG when set, matching case-insensitively", () => {
+    expect(loadConfig({ ...validEnv, DEFAULT_REPLY_LANG: " zh-hant " }).defaultLocale).toBe("zh-Hant");
+    expect(loadConfig({ ...validEnv, DEFAULT_REPLY_LANG: "EN" }).defaultLocale).toBe("en");
+  });
+
+  test("blank DEFAULT_REPLY_LANG falls back to id", () => {
+    expect(loadConfig({ ...validEnv, DEFAULT_REPLY_LANG: "  " }).defaultLocale).toBe("id");
+  });
+
+  test("throws on a DEFAULT_REPLY_LANG the bot has no texts for", () => {
+    for (const value of ["ko", "zh", "ja-JP"]) {
+      expect(() => loadConfig({ ...validEnv, DEFAULT_REPLY_LANG: value })).toThrow(
+        `Invalid DEFAULT_REPLY_LANG: ${value} (use one of: id, en, ja, zh-Hans, zh-Hant)`,
       );
     }
   });

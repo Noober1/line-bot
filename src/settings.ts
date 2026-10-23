@@ -15,24 +15,15 @@ export const ISO_639_1: ReadonlySet<string> = new Set(
 export type SettingKey = "translate";
 export type Settings = Readonly<Record<SettingKey, string>>;
 
+// Description and hint texts live in messages.ts, one per reply language.
 type SettingSpec = {
-  readonly description: string;
-  // Shown by /config and on an invalid value.
-  readonly hint: string;
   // The canonical value, or null when the input is not allowed.
   readonly parse: (value: string) => string | null;
 };
 
 // A Map, not an object literal: input like "/config constructor x" must not hit Object.prototype.
 export const SETTINGS: ReadonlyMap<SettingKey, SettingSpec> = new Map<SettingKey, SettingSpec>([
-  [
-    "translate",
-    {
-      description: "bahasa tujuan /translate",
-      hint: "kode bahasa ISO 639-1, mis. en, id, ja, ko, zh",
-      parse: parseLanguage,
-    },
-  ],
+  ["translate", { parse: parseLanguage }],
 ]);
 
 export type SettingsStore = {
@@ -92,7 +83,7 @@ export function createSettingsStore(db: Database, defaults: Settings): SettingsS
   };
 }
 
-// Binds the store to one user. `lineLanguage` is the user's LINE language (BCP 47); task 7c fills it.
+// Binds the store to one user. `lineLanguage` is the user's LINE language (BCP 47), if known.
 export function settingsFor(store: SettingsStore, userId: string, lineLanguage?: string): UserSettings {
   return {
     stored: () => store.stored(userId),

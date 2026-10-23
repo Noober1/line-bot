@@ -1,10 +1,20 @@
 import type { webhook } from "@line/bot-sdk";
 import type { Ai } from "./ai";
 import { parseCommand, runCommand } from "./commands";
+import { localeFromLine, type LineLanguage, type Locale } from "./language";
 import { sourceKey, type SessionStore, type StoredMessage } from "./session";
 import { settingsFor, type SettingsStore } from "./settings";
 
 export type Reply = (replyToken: string, text: string) => Promise<void>;
+
+export type Languages = {
+  readonly lineLanguage: LineLanguage;
+  // Reply language when the sender's LINE language is unknown or not supported (DEFAULT_REPLY_LANG).
+  readonly defaultLocale: Locale;
+};
+
+// For callers without LINE access (tests): every sender gets Indonesian replies.
+const NO_LINE_LANGUAGE: Languages = { lineLanguage: async () => undefined, defaultLocale: "id" };
 
 // How many stored messages go to the AI with each new message.
 export const AI_HISTORY_LIMIT = 20;
@@ -16,9 +26,10 @@ export async function handleEvents(
   sessions: SessionStore,
   ai: Ai,
   settings: SettingsStore,
+  languages: Languages = NO_LINE_LANGUAGE,
 ): Promise<void> {
   const results = await Promise.allSettled(
-    events.map((event) => handleEvent(event, reply, sessions, ai, settings)),
+    events.map((event) => handleEvent(event, reply, sessions, ai, settings, languages)),
   );
   for (const result of results) {
     if (result.status === "rejected") {
@@ -33,6 +44,7 @@ async function handleEvent(
   sessions: SessionStore,
   ai: Ai,
   settings: SettingsStore,
+  languages: Languages,
 ): Promise<void> {
   if (event.type !== "message" || event.message.type !== "text" || !event.replyToken) {
     return;
@@ -44,10 +56,13 @@ async function handleEvent(
     const resetHistory = () => {
       if (key) sessions.clear(key);
     };
-    // Settings belong to the sender, also in a group.
+    // Settings and the reply language belong to the sender, also in a group.
+    // The LINE language is fetched for commands only: the AI answers in the user's language by itself.
     const userId = event.source?.userId;
-    const userSettings = userId ? settingsFor(settings, userId) : null;
-    const context = { resetHistory, settings: userSettings, defaults: settings.defaults, ai };
+    const lineLanguage = userId ? await languages.lineLanguage(userId) : undefined;
+    const userSettings = userId ? settingsFor(settings, userId, lineLanguage) : null;
+    const locale = localeFromLine(lineLanguage) ?? languages.defaultLocale;
+    const context = { resetHistory, settings: userSettings, defaults: settings.defaults, ai, locale };
     await reply(event.replyToken, await runCommand(command, context));
     return;
   }

@@ -328,4 +328,68 @@ describe("handleEvents", () => {
     await handleEvents([textEvent("/translate halo", "rt-1", USER_U1)], reply, sessions, failingAi(), settings);
     expect(reply).toHaveBeenCalledWith("rt-1", "Gagal menerjemahkan. Coba lagi nanti.");
   });
+
+  test("a command is answered in the sender's LINE language", async () => {
+    const reply = okReply();
+    const lineLanguage = mock(async (_userId: string) => "ja");
+    await handleEvents([textEvent("/reset", "rt-1", USER_U1)], reply, sessions, echoAi(), settings, {
+      lineLanguage,
+      defaultLocale: "id",
+    });
+    expect(lineLanguage).toHaveBeenCalledWith("U1");
+    expect(reply).toHaveBeenCalledWith("rt-1", "チャット履歴を削除しました。");
+  });
+
+  test("a group command uses the sender's LINE language", async () => {
+    const reply = okReply();
+    const lineLanguage = mock(async (_userId: string) => "zh-TW");
+    const group: webhook.Source = { type: "group", groupId: "C1", userId: "U1" };
+    await handleEvents([textEvent("/reset", "rt-1", group)], reply, sessions, echoAi(), settings, {
+      lineLanguage,
+      defaultLocale: "id",
+    });
+    expect(lineLanguage).toHaveBeenCalledWith("U1");
+    expect(reply).toHaveBeenCalledWith("rt-1", "聊天記錄已清除。");
+  });
+
+  test("an unknown or unsupported LINE language falls back to the default locale", async () => {
+    for (const language of [undefined, "ko"]) {
+      const reply = okReply();
+      await handleEvents([textEvent("/reset", "rt-1", USER_U1)], reply, sessions, echoAi(), settings, {
+        lineLanguage: async () => language,
+        defaultLocale: "en",
+      });
+      expect(reply).toHaveBeenCalledWith("rt-1", "Chat history cleared.");
+    }
+  });
+
+  test("the LINE language is the default target of /translate", async () => {
+    const ai = echoAi();
+    await handleEvents([textEvent("/translate halo", "rt-1", USER_U1)], okReply(), sessions, ai, settings, {
+      lineLanguage: async () => "ko-KR",
+      defaultLocale: "id",
+    });
+    expect(ai.mock.calls[0]![1]).toBe(translatePrompt("ko"));
+  });
+
+  test("without a user ID the LINE language is not fetched", async () => {
+    const reply = okReply();
+    const lineLanguage = mock(async (_userId: string) => "ja");
+    const group = { type: "group", groupId: "C1" } as webhook.Source;
+    await handleEvents([textEvent("/reset", "rt-1", group)], reply, sessions, echoAi(), settings, {
+      lineLanguage,
+      defaultLocale: "en",
+    });
+    expect(lineLanguage).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith("rt-1", "Chat history cleared.");
+  });
+
+  test("AI chat does not fetch the LINE language", async () => {
+    const lineLanguage = mock(async (_userId: string) => "ja");
+    await handleEvents([textEvent("halo", "rt-1", USER_U1)], okReply(), sessions, echoAi(), settings, {
+      lineLanguage,
+      defaultLocale: "id",
+    });
+    expect(lineLanguage).not.toHaveBeenCalled();
+  });
 });

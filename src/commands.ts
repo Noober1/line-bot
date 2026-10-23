@@ -1,12 +1,7 @@
 import type { Ai } from "./ai";
-import {
-  parseSettingKey,
-  parseSettingValue,
-  SETTINGS,
-  type SettingKey,
-  type Settings,
-  type UserSettings,
-} from "./settings";
+import type { Locale } from "./language";
+import { MESSAGES, type CommandName, type Messages } from "./messages";
+import { parseSettingKey, parseSettingValue, SETTINGS, type Settings, type UserSettings } from "./settings";
 
 export type Command = { readonly name: string; readonly args: string };
 
@@ -18,10 +13,11 @@ export type CommandContext = {
   // Global defaults, used instead of `settings` when it is null.
   readonly defaults: Settings;
   readonly ai: Ai;
+  // Language of the reply texts.
+  readonly locale: Locale;
 };
 
 type CommandSpec = {
-  readonly description: string;
   readonly run: (args: string, context: CommandContext) => string | Promise<string>;
 };
 
@@ -32,27 +28,21 @@ export const MAX_TRANSLATE_CHARS = 1000;
 const LANGUAGE_NAMES = new Intl.DisplayNames(["id"], { type: "language" });
 
 // A Map, not an object literal: input like "/constructor" must not hit Object.prototype.
-const COMMANDS: ReadonlyMap<string, CommandSpec> = new Map<string, CommandSpec>([
-  ["help", { description: "tampilkan daftar perintah", run: () => helpText() }],
-  ["ping", { description: "cek apakah bot aktif", run: () => "pong" }],
+// Descriptions for /help live in messages.ts.
+const COMMANDS: ReadonlyMap<CommandName, CommandSpec> = new Map<CommandName, CommandSpec>([
+  ["help", { run: (_args, context) => helpText(MESSAGES[context.locale]) }],
+  ["ping", { run: () => "pong" }],
   [
     "reset",
     {
-      description: "hapus riwayat chat",
       run: (_args, context) => {
         context.resetHistory();
-        return "Riwayat chat sudah dihapus.";
+        return MESSAGES[context.locale].historyCleared;
       },
     },
   ],
-  [
-    "translate",
-    { description: "terjemahkan teks ke bahasa pilihan kamu (atur: /config translate)", run: translateText },
-  ],
-  [
-    "config",
-    { description: "lihat atau ubah pengaturan kamu", run: (args, context) => configText(args, context.settings) },
-  ],
+  ["translate", { run: translateText }],
+  ["config", { run: configText }],
 ]);
 
 // Text starting with "/" (after trimming) is a command. The name is case-insensitive.
@@ -66,34 +56,32 @@ export function parseCommand(text: string): Command | null {
 }
 
 export function runCommand(command: Command, context: CommandContext): string | Promise<string> {
-  const spec = COMMANDS.get(command.name);
-  return spec ? spec.run(command.args, context) : unknownCommandText(command.name);
+  // Any string is safe to look up; an unknown name just finds nothing.
+  const spec = COMMANDS.get(command.name as CommandName);
+  return spec ? spec.run(command.args, context) : MESSAGES[context.locale].unknownCommand(shorten(command.name));
 }
 
-function helpText(): string {
-  const lines = [...COMMANDS].map(([name, spec]) => `/${name} - ${spec.description}`);
-  return ["Daftar perintah:", ...lines].join("\n");
-}
-
-function unknownCommandText(name: string): string {
-  return `Perintah /${shorten(name)} tidak dikenal. Ketik /help untuk daftar perintah.`;
+function helpText(t: Messages): string {
+  const lines = [...COMMANDS.keys()].map((name) => `/${name} - ${t.commandDescriptions[name]}`);
+  return [t.commandsTitle, ...lines].join("\n");
 }
 
 // Sends only the text, without chat history, and saves nothing.
 async function translateText(args: string, context: CommandContext): Promise<string> {
+  const t = MESSAGES[context.locale];
   const text = args.trim();
   const language = (context.settings?.resolved() ?? context.defaults).translate;
   if (!text) {
-    return `Pakai: /translate <teks>. Bahasa tujuan kamu: ${language}. Ubah: /config translate <kode>.`;
+    return t.translateUsage(language);
   }
   if (text.length > MAX_TRANSLATE_CHARS) {
-    return `Teks terlalu panjang (maks ${MAX_TRANSLATE_CHARS} karakter).`;
+    return t.translateTooLong(MAX_TRANSLATE_CHARS);
   }
   try {
     return await context.ai([{ role: "user", content: text }], translatePrompt(language));
   } catch (error) {
     console.error("Translate failed:", error);
-    return "Gagal menerjemahkan. Coba lagi nanti.";
+    return t.translateFailed;
   }
 }
 
@@ -108,51 +96,44 @@ export function translatePrompt(language: string): string {
 }
 
 // "/config" lists, "/config <name> <value>" sets, "/config <name> reset" goes back to the default.
-function configText(args: string, settings: UserSettings | null): string {
+function configText(args: string, context: CommandContext): string {
+  const t = MESSAGES[context.locale];
+  const { settings } = context;
   if (!settings) {
-    return "Pengaturan tidak bisa dipakai: LINE tidak mengirim ID kamu.";
+    return t.settingsUnavailable;
   }
   const [name = "", ...rest] = args.trim().split(/\s+/);
   const value = rest.join(" ");
   if (!name) {
-    return settingsListText(settings);
+    return settingsListText(settings, t);
   }
   const key = parseSettingKey(name);
   if (!key) {
-    return `Pengaturan ${shorten(name)} tidak dikenal. Ketik /config untuk daftar pengaturan.`;
+    return t.unknownSetting(shorten(name));
   }
   if (!value) {
-    return `Pakai: /config ${key} <nilai>. Nilai: ${hint(key)}.`;
+    return t.settingUsage(key, t.settingHints[key]);
   }
   if (value.toLowerCase() === RESET_VALUE) {
     settings.unset(key);
-    return `${key} kembali ke bawaan: ${settings.resolved()[key]}.`;
+    return t.settingReset(key, settings.resolved()[key]);
   }
   const parsed = parseSettingValue(key, value);
   if (!parsed) {
-    return `Nilai ${shorten(value)} tidak valid untuk ${key}. Pakai ${hint(key)}.`;
+    return t.invalidValue(shorten(value), key, t.settingHints[key]);
   }
   settings.set(key, parsed);
-  return `${key} diubah ke ${parsed}.`;
+  return t.settingChanged(key, parsed);
 }
 
-function settingsListText(settings: UserSettings): string {
+function settingsListText(settings: UserSettings, t: Messages): string {
   const stored = settings.stored();
   const resolved = settings.resolved();
-  const lines = [...SETTINGS].flatMap(([key, spec]) => [
-    `${key} = ${resolved[key]}${Object.hasOwn(stored, key) ? "" : " (bawaan)"} - ${spec.description}`,
-    `  nilai: ${spec.hint}`,
+  const lines = [...SETTINGS.keys()].flatMap((key) => [
+    `${key} = ${resolved[key]}${Object.hasOwn(stored, key) ? "" : t.defaultMark} - ${t.settingDescriptions[key]}`,
+    `  ${t.valueLabel}: ${t.settingHints[key]}`,
   ]);
-  return [
-    "Pengaturan kamu:",
-    ...lines,
-    "Ubah: /config <nama> <nilai>",
-    `Kembali ke bawaan: /config <nama> ${RESET_VALUE}`,
-  ].join("\n");
-}
-
-function hint(key: SettingKey): string {
-  return SETTINGS.get(key)?.hint ?? "";
+  return [t.settingsTitle, ...lines, t.settingsChangeHelp, t.settingsResetHelp(RESET_VALUE)].join("\n");
 }
 
 function shorten(text: string): string {

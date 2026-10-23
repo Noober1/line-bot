@@ -62,6 +62,7 @@ A text message that starts with `/` is a command. Names are case-insensitive.
 | `/help` | list of commands |
 | `/ping` | `pong` |
 | `/reset` | clears the chat history of this chat (in a group: the whole group's) |
+| `/translate <teks>` | the text translated into your `translate` language (see "Translate") |
 | `/config` | shows or changes your own settings (see "User settings") |
 
 An unknown command gets `Perintah /<name> tidak dikenal. Ketik /help untuk daftar perintah.`
@@ -97,6 +98,21 @@ AI_API_KEY=                               # optional: only if 9router has REQUIR
 - Chat text is sent to whatever provider your 9router model or combo uses. Choose accordingly.
 - Keep 9router on localhost, or turn on `REQUIRE_API_KEY=true`, and change its default
   dashboard password (`INITIAL_PASSWORD`, default `123456`).
+
+## Translate
+
+`/translate <teks>` sends only that text to the AI, with a translate prompt. It uses no chat
+history and saves nothing. The target language is your `translate` setting (see "User settings");
+in a group, the sender's setting.
+
+```
+/translate selamat pagi         -> Good morning   (translate = en)
+/translate                      -> usage and your current target language
+```
+
+- Text over 1000 characters is refused: `Teks terlalu panjang (maks 1000 karakter).`
+- If the AI fails, the bot replies `Gagal menerjemahkan. Coba lagi nanti.` and logs `Translate failed: ...`.
+- The text is sent to the same 9router model as AI chat (`AI_MODEL`).
 
 ## User settings
 

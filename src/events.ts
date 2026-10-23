@@ -47,7 +47,8 @@ async function handleEvent(
     // Settings belong to the sender, also in a group.
     const userId = event.source?.userId;
     const userSettings = userId ? settingsFor(settings, userId) : null;
-    await reply(event.replyToken, runCommand(command, { resetHistory, settings: userSettings }));
+    const context = { resetHistory, settings: userSettings, defaults: settings.defaults, ai };
+    await reply(event.replyToken, await runCommand(command, context));
     return;
   }
   // An AI failure throws and is logged by handleEvents: the user gets no reply and nothing is saved.

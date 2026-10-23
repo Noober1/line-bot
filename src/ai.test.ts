@@ -36,6 +36,15 @@ describe("createAi", () => {
     });
   });
 
+  test("a custom system prompt replaces SYSTEM_PROMPT", async () => {
+    const fetchFn = answering("hai");
+    await createAi(config, fetchFn)([{ role: "user", content: "halo" }], "Terjemahkan.");
+    expect(JSON.parse(fetchFn.mock.calls[0]![1].body as string).messages).toEqual([
+      { role: "system", content: "Terjemahkan." },
+      { role: "user", content: "halo" },
+    ]);
+  });
+
   test("sends no Authorization header without an API key", async () => {
     const fetchFn = answering("hai");
     await createAi(config, fetchFn)([{ role: "user", content: "halo" }]);

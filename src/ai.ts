@@ -6,8 +6,9 @@ export type AiConfig = {
   readonly model: string;
 };
 
-// `messages` = chat history plus the new user message, oldest first. Resolves to the answer text.
-export type Ai = (messages: readonly StoredMessage[]) => Promise<string>;
+// `messages` = chat history plus the new user message, oldest first. `system` replaces SYSTEM_PROMPT.
+// Resolves to the answer text.
+export type Ai = (messages: readonly StoredMessage[], system?: string) => Promise<string>;
 
 type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -23,7 +24,7 @@ export const AI_TIMEOUT_MS = 40_000;
 // Talks to any OpenAI-compatible /chat/completions endpoint (9router).
 export function createAi(config: AiConfig, fetchFn: FetchFn = fetch, timeoutMs = AI_TIMEOUT_MS): Ai {
   const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
-  return async (messages) => {
+  return async (messages, system = SYSTEM_PROMPT) => {
     const response = await fetchFn(url, {
       method: "POST",
       headers: {
@@ -34,7 +35,7 @@ export function createAi(config: AiConfig, fetchFn: FetchFn = fetch, timeoutMs =
         model: config.model,
         max_tokens: MAX_ANSWER_TOKENS,
         stream: false,
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+        messages: [{ role: "system", content: system }, ...messages],
       }),
       signal: AbortSignal.timeout(timeoutMs),
     });

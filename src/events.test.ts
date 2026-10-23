@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { webhook } from "@line/bot-sdk";
+import { translatePrompt } from "./commands";
 import { AI_HISTORY_LIMIT, handleEvents } from "./events";
 import { createSessionStore, type SessionStore, type StoredMessage } from "./session";
 import { createSettingsStore, type SettingsStore } from "./settings";
@@ -23,11 +24,11 @@ function okReply() {
 
 // Answers "re: <text of the newest message>", so each test can tell which message was answered.
 function echoAi() {
-  return mock(async (messages: readonly StoredMessage[]) => `re: ${messages.at(-1)?.content}`);
+  return mock(async (messages: readonly StoredMessage[], _system?: string) => `re: ${messages.at(-1)?.content}`);
 }
 
 function failingAi() {
-  return mock(async (_messages: readonly StoredMessage[]): Promise<string> => {
+  return mock(async (_messages: readonly StoredMessage[], _system?: string): Promise<string> => {
     throw new Error("ai down");
   });
 }
@@ -291,5 +292,40 @@ describe("handleEvents", () => {
     await handleEvents([textEvent("/config translate ja", "rt-1", group)], reply, sessions, echoAi(), settings);
     expect(reply).toHaveBeenCalledWith("rt-1", "Pengaturan tidak bisa dipakai: LINE tidak mengirim ID kamu.");
     expect(settings.stored("C1")).toEqual({});
+  });
+
+  test("/translate replies with the AI translation, without history, and saves nothing", async () => {
+    sessions.append("U1", "user", "lama");
+    sessions.append("U1", "assistant", "jawaban lama");
+    const reply = okReply();
+    const ai = echoAi();
+    await handleEvents([textEvent("/translate halo", "rt-1", USER_U1)], reply, sessions, ai, settings);
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: halo");
+    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "halo" }], translatePrompt("en"));
+    expect(sessions.recent("U1", 10)).toEqual([
+      { role: "user", content: "lama" },
+      { role: "assistant", content: "jawaban lama" },
+    ]);
+  });
+
+  test("/translate in a group uses the sender's language", async () => {
+    settings.set("U1", "translate", "ja");
+    const ai = echoAi();
+    const group: webhook.Source = { type: "group", groupId: "C1", userId: "U1" };
+    await handleEvents([textEvent("/translate halo", "rt-1", group)], okReply(), sessions, ai, settings);
+    expect(ai.mock.calls[0]![1]).toBe(translatePrompt("ja"));
+  });
+
+  test("/translate from a group member without a user ID uses the global default", async () => {
+    const ai = echoAi();
+    const group = { type: "group", groupId: "C1" } as webhook.Source;
+    await handleEvents([textEvent("/translate halo", "rt-1", group)], okReply(), sessions, ai, settings);
+    expect(ai.mock.calls[0]![1]).toBe(translatePrompt("en"));
+  });
+
+  test("/translate still replies when the AI fails", async () => {
+    const reply = okReply();
+    await handleEvents([textEvent("/translate halo", "rt-1", USER_U1)], reply, sessions, failingAi(), settings);
+    expect(reply).toHaveBeenCalledWith("rt-1", "Gagal menerjemahkan. Coba lagi nanti.");
   });
 });

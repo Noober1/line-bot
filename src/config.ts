@@ -1,3 +1,4 @@
+import type { AiConfig } from "./ai";
 import type { Allowlist } from "./allowlist";
 
 export type Config = {
@@ -6,14 +7,16 @@ export type Config = {
   readonly lineChannelAccessToken: string;
   readonly allowlist: Allowlist;
   readonly databasePath: string;
+  readonly ai: AiConfig;
 };
 
 type Env = Record<string, string | undefined>;
 
-const REQUIRED_KEYS = ["LINE_CHANNEL_SECRET", "LINE_CHANNEL_ACCESS_TOKEN"] as const;
+const REQUIRED_KEYS = ["LINE_CHANNEL_SECRET", "LINE_CHANNEL_ACCESS_TOKEN", "AI_MODEL"] as const;
 const DEFAULT_PORT = 3000;
 const MAX_PORT = 65535;
 const DEFAULT_DATABASE_PATH = "bot.sqlite";
+const DEFAULT_AI_BASE_URL = "http://localhost:20128/v1";
 
 export function loadConfig(env: Env): Config {
   const missing = REQUIRED_KEYS.filter((key) => !env[key]?.trim());
@@ -35,6 +38,11 @@ export function loadConfig(env: Env): Config {
       groupIds: parseIdList(env.ALLOWED_GROUP_IDS),
     },
     databasePath: env.DATABASE_PATH?.trim() || DEFAULT_DATABASE_PATH,
+    ai: {
+      baseUrl: env.AI_BASE_URL?.trim() || DEFAULT_AI_BASE_URL,
+      apiKey: env.AI_API_KEY?.trim() || undefined,
+      model: env.AI_MODEL!.trim(),
+    },
   };
 }
 

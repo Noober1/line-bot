@@ -23,7 +23,7 @@ Health check: `GET /health` returns `{"status":"ok"}`.
 
 `POST /webhook` receives LINE events. It checks the `x-line-signature` header
 (401 if missing or wrong), returns 200 right away, then answers every text message:
-commands (see below) get their reply, any other text is echoed back.
+commands (see below) get their reply, any other text is answered by the AI (see "AI chat").
 
 Dev with a real LINE channel:
 
@@ -76,3 +76,23 @@ Every non-command text and the bot's reply are saved in a SQLite file
 - `/reset` deletes the history of the chat it is sent in.
 
 The file holds chat text in plain form. Keep it private and back it up like `.env`.
+
+## AI chat
+
+Any text that is not a command is sent to an AI through
+[9router](https://github.com/decolua/9router), an OpenAI-compatible gateway
+(`POST {AI_BASE_URL}/chat/completions`). The AI gets the newest 20 messages of the
+chat plus the new one.
+
+```bash
+AI_MODEL=my-combo                         # required: 9router combo or provider/model
+AI_BASE_URL=http://localhost:20128/v1     # optional
+AI_API_KEY=                               # optional: only if 9router has REQUIRE_API_KEY=true
+```
+
+- If the AI fails (9router down, timeout after 40 s, error status, empty answer), the bot
+  sends **no reply**, logs `Failed to handle event: ...`, and saves nothing.
+- Answers are cut to 4500 characters (LINE's limit is 5000).
+- Chat text is sent to whatever provider your 9router model or combo uses. Choose accordingly.
+- Keep 9router on localhost, or turn on `REQUIRE_API_KEY=true`, and change its default
+  dashboard password (`INITIAL_PASSWORD`, default `123456`).

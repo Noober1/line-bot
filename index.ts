@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { messagingApi } from "@line/bot-sdk";
+import { createAi } from "./src/ai";
 import { filterAllowed } from "./src/allowlist";
 import { createApp } from "./src/app";
 import { loadConfig, type Config } from "./src/config";
@@ -30,10 +31,12 @@ const reply: Reply = async (replyToken, text) => {
 };
 
 const sessions = createSessionStore(new Database(config.databasePath));
+const ai = createAi(config.ai);
+console.log(`AI: model ${config.ai.model} via ${config.ai.baseUrl}`);
 
 const app = createApp({
   channelSecret: config.lineChannelSecret,
-  onEvents: (events) => void handleEvents(filterAllowed(events, allowlist), reply, sessions),
+  onEvents: (events) => void handleEvents(filterAllowed(events, allowlist), reply, sessions, ai),
 });
 
 const server = Bun.serve({ port: config.port, fetch: app });

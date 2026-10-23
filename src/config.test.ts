@@ -4,6 +4,7 @@ import { loadConfig } from "./config";
 const validEnv = {
   LINE_CHANNEL_SECRET: "secret",
   LINE_CHANNEL_ACCESS_TOKEN: "token",
+  AI_MODEL: "combo-chat",
 };
 
 describe("loadConfig", () => {
@@ -14,6 +15,7 @@ describe("loadConfig", () => {
       lineChannelAccessToken: "token",
       allowlist: { userIds: new Set(), groupIds: new Set() },
       databasePath: "bot.sqlite",
+      ai: { baseUrl: "http://localhost:20128/v1", apiKey: undefined, model: "combo-chat" },
     });
   });
 
@@ -45,9 +47,29 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...validEnv, DATABASE_PATH: "  " }).databasePath).toBe("bot.sqlite");
   });
 
+  test("uses AI_BASE_URL, AI_API_KEY and AI_MODEL when set, trimmed", () => {
+    const { ai } = loadConfig({
+      ...validEnv,
+      AI_BASE_URL: " http://10.0.0.5:20128/v1 ",
+      AI_API_KEY: " k-123 ",
+      AI_MODEL: " cc/claude-opus-4-7 ",
+    });
+    expect(ai).toEqual({ baseUrl: "http://10.0.0.5:20128/v1", apiKey: "k-123", model: "cc/claude-opus-4-7" });
+  });
+
+  test("blank AI_BASE_URL and AI_API_KEY fall back to the default and no key", () => {
+    const { ai } = loadConfig({ ...validEnv, AI_BASE_URL: "  ", AI_API_KEY: "  " });
+    expect(ai.baseUrl).toBe("http://localhost:20128/v1");
+    expect(ai.apiKey).toBeUndefined();
+  });
+
+  test("throws when AI_MODEL is blank", () => {
+    expect(() => loadConfig({ ...validEnv, AI_MODEL: " " })).toThrow("Missing required env: AI_MODEL");
+  });
+
   test("throws listing every missing required key", () => {
     expect(() => loadConfig({})).toThrow(
-      "Missing required env: LINE_CHANNEL_SECRET, LINE_CHANNEL_ACCESS_TOKEN",
+      "Missing required env: LINE_CHANNEL_SECRET, LINE_CHANNEL_ACCESS_TOKEN, AI_MODEL",
     );
   });
 

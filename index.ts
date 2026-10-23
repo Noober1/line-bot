@@ -6,6 +6,7 @@ import { createApp } from "./src/app";
 import { loadConfig, type Config } from "./src/config";
 import { handleEvents, type Reply } from "./src/events";
 import { createSessionStore } from "./src/session";
+import { createSettingsStore } from "./src/settings";
 
 let config: Config;
 try {
@@ -30,13 +31,15 @@ const reply: Reply = async (replyToken, text) => {
   await client.replyMessage({ replyToken, messages: [{ type: "text", text }] });
 };
 
-const sessions = createSessionStore(new Database(config.databasePath));
+const db = new Database(config.databasePath);
+const sessions = createSessionStore(db);
+const settings = createSettingsStore(db, config.defaultSettings);
 const ai = createAi(config.ai);
 console.log(`AI: model ${config.ai.model} via ${config.ai.baseUrl}`);
 
 const app = createApp({
   channelSecret: config.lineChannelSecret,
-  onEvents: (events) => void handleEvents(filterAllowed(events, allowlist), reply, sessions, ai),
+  onEvents: (events) => void handleEvents(filterAllowed(events, allowlist), reply, sessions, ai, settings),
 });
 
 const server = Bun.serve({ port: config.port, fetch: app });

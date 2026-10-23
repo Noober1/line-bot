@@ -2,6 +2,7 @@ import type { webhook } from "@line/bot-sdk";
 import type { Ai } from "./ai";
 import { parseCommand, runCommand } from "./commands";
 import { sourceKey, type SessionStore, type StoredMessage } from "./session";
+import { settingsFor, type SettingsStore } from "./settings";
 
 export type Reply = (replyToken: string, text: string) => Promise<void>;
 
@@ -14,8 +15,11 @@ export async function handleEvents(
   reply: Reply,
   sessions: SessionStore,
   ai: Ai,
+  settings: SettingsStore,
 ): Promise<void> {
-  const results = await Promise.allSettled(events.map((event) => handleEvent(event, reply, sessions, ai)));
+  const results = await Promise.allSettled(
+    events.map((event) => handleEvent(event, reply, sessions, ai, settings)),
+  );
   for (const result of results) {
     if (result.status === "rejected") {
       console.error("Failed to handle event:", result.reason);
@@ -23,7 +27,13 @@ export async function handleEvents(
   }
 }
 
-async function handleEvent(event: webhook.Event, reply: Reply, sessions: SessionStore, ai: Ai): Promise<void> {
+async function handleEvent(
+  event: webhook.Event,
+  reply: Reply,
+  sessions: SessionStore,
+  ai: Ai,
+  settings: SettingsStore,
+): Promise<void> {
   if (event.type !== "message" || event.message.type !== "text" || !event.replyToken) {
     return;
   }
@@ -34,7 +44,10 @@ async function handleEvent(event: webhook.Event, reply: Reply, sessions: Session
     const resetHistory = () => {
       if (key) sessions.clear(key);
     };
-    await reply(event.replyToken, runCommand(command, { resetHistory }));
+    // Settings belong to the sender, also in a group.
+    const userId = event.source?.userId;
+    const userSettings = userId ? settingsFor(settings, userId) : null;
+    await reply(event.replyToken, runCommand(command, { resetHistory, settings: userSettings }));
     return;
   }
   // An AI failure throws and is logged by handleEvents: the user gets no reply and nothing is saved.

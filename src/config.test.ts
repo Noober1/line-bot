@@ -16,6 +16,7 @@ describe("loadConfig", () => {
       allowlist: { userIds: new Set(), groupIds: new Set() },
       databasePath: "bot.sqlite",
       ai: { baseUrl: "http://localhost:20128/v1", apiKey: undefined, model: "combo-chat" },
+      defaultSettings: { translate: "en" },
     });
   });
 
@@ -65,6 +66,22 @@ describe("loadConfig", () => {
 
   test("throws when AI_MODEL is blank", () => {
     expect(() => loadConfig({ ...validEnv, AI_MODEL: " " })).toThrow("Missing required env: AI_MODEL");
+  });
+
+  test("uses DEFAULT_TRANSLATE_LANG when set, trimmed and lowercased", () => {
+    expect(loadConfig({ ...validEnv, DEFAULT_TRANSLATE_LANG: " JA " }).defaultSettings).toEqual({ translate: "ja" });
+  });
+
+  test("blank DEFAULT_TRANSLATE_LANG falls back to en", () => {
+    expect(loadConfig({ ...validEnv, DEFAULT_TRANSLATE_LANG: "  " }).defaultSettings).toEqual({ translate: "en" });
+  });
+
+  test("throws on a DEFAULT_TRANSLATE_LANG that is not an ISO 639-1 code", () => {
+    for (const value of ["xx", "zh-Hant", "japanese"]) {
+      expect(() => loadConfig({ ...validEnv, DEFAULT_TRANSLATE_LANG: value })).toThrow(
+        `Invalid DEFAULT_TRANSLATE_LANG: ${value} (use an ISO 639-1 code)`,
+      );
+    }
   });
 
   test("throws listing every missing required key", () => {

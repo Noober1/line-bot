@@ -62,6 +62,7 @@ A text message that starts with `/` is a command. Names are case-insensitive.
 | `/help` | list of commands |
 | `/ping` | `pong` |
 | `/reset` | clears the chat history of this chat (in a group: the whole group's) |
+| `/config` | shows or changes your own settings (see "User settings") |
 
 An unknown command gets `Perintah /<name> tidak dikenal. Ketik /help untuk daftar perintah.`
 
@@ -96,3 +97,22 @@ AI_API_KEY=                               # optional: only if 9router has REQUIR
 - Chat text is sent to whatever provider your 9router model or combo uses. Choose accordingly.
 - Keep 9router on localhost, or turn on `REQUIRE_API_KEY=true`, and change its default
   dashboard password (`INITIAL_PASSWORD`, default `123456`).
+
+## User settings
+
+Each user has their own settings, stored in the same SQLite file (table `user_settings`).
+In a group, `/config` changes the settings of the person who sends it, never the group's.
+
+```
+/config                    list your settings
+/config translate ja       set the target language of /translate
+/config translate reset    go back to the default
+```
+
+| Setting | Values | Default |
+|---|---|---|
+| `translate` | ISO 639-1 code (`en`, `id`, `ja`, `ko`, `zh`, ...) | `DEFAULT_TRANSLATE_LANG` (`en`); your LINE language once task 7c is done |
+
+Order: your own value > your LINE app language (from task 7c; not used yet) > `DEFAULT_TRANSLATE_LANG` > `en`.
+LINE does not send a user ID for some group members (for example LINE desktop users);
+they get `Pengaturan tidak bisa dipakai: LINE tidak mengirim ID kamu.`

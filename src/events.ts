@@ -24,6 +24,9 @@ export const AI_HISTORY_LIMIT = 20;
 // "/elysia <text>" asks the AI like a plain message: the fallback when a mention of the bot is not possible.
 const ELYSIA_COMMAND: CommandName = "elysia";
 
+// Settings are changed in a 1:1 chat only: a group has no private reply, and a push DM costs quota.
+const CONFIG_COMMAND: CommandName = "config";
+
 // Never rejects: one failed reply or AI call must not affect the others or crash the process.
 export async function handleEvents(
   events: webhook.Event[],
@@ -84,8 +87,12 @@ async function handleEvent(
     // The LINE language is fetched for commands only: the AI answers in the user's language by itself.
     const userId = event.source?.userId;
     const lineLanguage = userId ? await languages.lineLanguage(userId) : undefined;
-    const userSettings = userId ? settingsFor(settings, userId, lineLanguage) : null;
     const locale = localeFromLine(lineLanguage) ?? languages.defaultLocale;
+    if (inGroup && command.name === CONFIG_COMMAND) {
+      await reply(event.replyToken, MESSAGES[locale].configInGroup);
+      return;
+    }
+    const userSettings = userId ? settingsFor(settings, userId, lineLanguage) : null;
     const context = { resetHistory, settings: userSettings, defaults: settings.defaults, ai, locale };
     await reply(event.replyToken, await runCommand(command, context));
     return;

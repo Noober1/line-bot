@@ -30,6 +30,8 @@ export type Messages = {
   readonly rateLimited: string;
   // /elysia without text, or a group message that only mentions the bot.
   readonly elysiaUsage: string;
+  // /config in a group or room: LINE has no private reply there and a push DM costs quota.
+  readonly configInGroup: string;
 };
 
 const id: Messages = {
@@ -63,6 +65,7 @@ const id: Messages = {
   settingChanged: (key, value) => `${key} diubah ke ${value}.`,
   rateLimited: "Pesannya terlalu banyak. Tunggu sebentar lalu coba lagi.",
   elysiaUsage: "Pakai: /elysia <pesan>. Di grup, bisa juga mention bot lalu tulis pesannya.",
+  configInGroup: "Ganti pengaturan lewat chat pribadi (DM) dengan bot aja, jangan di grup.",
 };
 
 const en: Messages = {
@@ -96,6 +99,7 @@ const en: Messages = {
   settingChanged: (key, value) => `${key} changed to ${value}.`,
   rateLimited: "Too many messages. Please wait a moment and try again.",
   elysiaUsage: "Usage: /elysia <message>. In a group you can also mention the bot and write your message.",
+  configInGroup: "Change your settings in a private chat (DM) with the bot, not in a group.",
 };
 
 const ja: Messages = {
@@ -129,6 +133,7 @@ const ja: Messages = {
   settingChanged: (key, value) => `${key} を ${value} に変更しました。`,
   rateLimited: "メッセージが多すぎます。少し待ってからもう一度お試しください。",
   elysiaUsage: "使い方: /elysia <メッセージ>。グループではボットをメンションしてメッセージを書くこともできます。",
+  configInGroup: "設定の変更はグループではなく、ボットとの個別チャットで行ってください。",
 };
 
 const zhHans: Messages = {
@@ -161,6 +166,7 @@ const zhHans: Messages = {
   settingChanged: (key, value) => `${key} 已更改为 ${value}。`,
   rateLimited: "消息太多了，请稍等片刻再试。",
   elysiaUsage: "用法：/elysia <消息>。在群组中也可以 @机器人 后输入消息。",
+  configInGroup: "请在与机器人的私聊中更改设置，不要在群组中更改。",
 };
 
 const zhHant: Messages = {
@@ -193,6 +199,7 @@ const zhHant: Messages = {
   settingChanged: (key, value) => `${key} 已變更為 ${value}。`,
   rateLimited: "訊息太多了，請稍候再試。",
   elysiaUsage: "用法：/elysia <訊息>。在群組中也可以 @機器人 後輸入訊息。",
+  configInGroup: "請在與機器人的私聊中變更設定，不要在群組中變更。",
 };
 
 export const MESSAGES: Readonly<Record<Locale, Messages>> = { id, en, ja, "zh-Hans": zhHans, "zh-Hant": zhHant };

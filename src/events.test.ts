@@ -282,22 +282,49 @@ describe("handleEvents", () => {
     expect(settings.stored("U1")).toEqual({ translate: "ja" });
   });
 
-  test("/config in a group changes the sender's settings, not the group's", async () => {
-    const group: webhook.Source = { type: "group", groupId: "C1", userId: "U1" };
-    await handleEvents([textEvent("/config translate ja", "rt-1", group)], okReply(), sessions, echoAi(), settings);
+  const CONFIG_IN_GROUP_ID = "Ganti pengaturan lewat chat pribadi (DM) dengan bot aja, jangan di grup.";
+
+  test("/config in a group is refused with the DM hint, settings are neither read nor changed", async () => {
+    settings.set("U1", "translate", "ja");
+    const reply = okReply();
+    const ai = echoAi();
+    await handleEvents(
+      [textEvent("/config translate ko", "rt-1", GROUP_C1), textEvent("/config", "rt-2", GROUP_C1)],
+      reply, sessions, ai, settings,
+    );
+    expect(reply).toHaveBeenCalledWith("rt-1", CONFIG_IN_GROUP_ID);
+    expect(reply).toHaveBeenCalledWith("rt-2", CONFIG_IN_GROUP_ID);
     expect(settings.stored("U1")).toEqual({ translate: "ja" });
     expect(settings.stored("C1")).toEqual({});
-    const reply = okReply();
-    await handleEvents([textEvent("/config", "rt-2", USER_U1)], reply, sessions, echoAi(), settings);
-    expect(reply.mock.calls[0]![1]).toContain("translate = ja - ");
+    expect(ai).not.toHaveBeenCalled();
   });
 
-  test("/config from a group member without a user ID is refused", async () => {
+  test("/config in a room or from a group member without a user ID is refused the same way", async () => {
     const reply = okReply();
-    const group = { type: "group", groupId: "C1" } as webhook.Source;
-    await handleEvents([textEvent("/config translate ja", "rt-1", group)], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "Pengaturan tidak bisa dipakai: LINE tidak mengirim ID kamu.");
-    expect(settings.stored("C1")).toEqual({});
+    const noId = { type: "group", groupId: "C1" } as webhook.Source;
+    await handleEvents(
+      [textEvent("/CONFIG translate ja", "rt-1", ROOM_R1), textEvent("/config translate ja", "rt-2", noId)],
+      reply, sessions, echoAi(), settings,
+    );
+    expect(reply).toHaveBeenCalledWith("rt-1", CONFIG_IN_GROUP_ID);
+    expect(reply).toHaveBeenCalledWith("rt-2", CONFIG_IN_GROUP_ID);
+    expect(settings.stored("U1")).toEqual({});
+  });
+
+  test("the /config refusal in a group is in the sender's LINE language", async () => {
+    const reply = okReply();
+    await handleEvents([textEvent("/config", "rt-1", GROUP_C1)], reply, sessions, echoAi(), settings, {
+      lineLanguage: async () => "ja",
+      defaultLocale: "id",
+    });
+    expect(reply).toHaveBeenCalledWith("rt-1", "設定の変更はグループではなく、ボットとの個別チャットで行ってください。");
+  });
+
+  test("/config in a 1:1 chat still lists settings", async () => {
+    settings.set("U1", "translate", "ja");
+    const reply = okReply();
+    await handleEvents([textEvent("/config", "rt-1", USER_U1)], reply, sessions, echoAi(), settings);
+    expect(reply.mock.calls[0]![1]).toContain("translate = ja - ");
   });
 
   test("/translate replies with the AI translation, without history, and saves nothing", async () => {

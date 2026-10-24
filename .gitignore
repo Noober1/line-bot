@@ -41,3 +41,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 *.sqlite-journal
 *.sqlite-wal
 *.sqlite-shm
+
+# dev-only docs
+TASKS.md
+plans/
+
+# codegraph index
+.codegraph/

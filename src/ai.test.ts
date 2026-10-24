@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import { createAi, MAX_ANSWER_TOKENS, MAX_REPLY_CHARS, SYSTEM_PROMPT, type AiConfig } from "./ai";
+import { createAi, MAX_ANSWER_TOKENS, SYSTEM_PROMPT, type AiConfig } from "./ai";
 
 const config: AiConfig = { baseUrl: "http://router.test/v1", apiKey: undefined, model: "combo-chat" };
 
@@ -68,9 +68,9 @@ describe("createAi", () => {
     expect(await ai([{ role: "user", content: "halo" }])).toBe("halo juga");
   });
 
-  test("cuts an answer longer than MAX_REPLY_CHARS", async () => {
-    const ai = createAi(config, answering("a".repeat(MAX_REPLY_CHARS + 500)));
-    expect(await ai([{ role: "user", content: "x" }])).toHaveLength(MAX_REPLY_CHARS);
+  test("does not cut a long answer: the reply splits it into several messages", async () => {
+    const ai = createAi(config, answering("a".repeat(6000)));
+    expect(await ai([{ role: "user", content: "x" }])).toHaveLength(6000);
   });
 
   test("a non-2xx response throws with the status and a cut body", async () => {

@@ -2,6 +2,8 @@ import type { webhook } from "@line/bot-sdk";
 import type { Ai } from "./ai";
 import { parseCommand, runCommand } from "./commands";
 import { localeFromLine, type LineLanguage, type Locale } from "./language";
+import { MESSAGES } from "./messages";
+import type { RateLimit } from "./ratelimit";
 import { sourceKey, type SessionStore, type StoredMessage } from "./session";
 import { settingsFor, type SettingsStore } from "./settings";
 
@@ -27,9 +29,10 @@ export async function handleEvents(
   ai: Ai,
   settings: SettingsStore,
   languages: Languages = NO_LINE_LANGUAGE,
+  rateLimit: RateLimit = () => "allow",
 ): Promise<void> {
   const results = await Promise.allSettled(
-    events.map((event) => handleEvent(event, reply, sessions, ai, settings, languages)),
+    events.map((event) => handleEvent(event, reply, sessions, ai, settings, languages, rateLimit)),
   );
   for (const result of results) {
     if (result.status === "rejected") {
@@ -45,12 +48,24 @@ async function handleEvent(
   ai: Ai,
   settings: SettingsStore,
   languages: Languages,
+  rateLimit: RateLimit,
 ): Promise<void> {
   if (event.type !== "message" || event.message.type !== "text" || !event.replyToken) {
     return;
   }
   const { text } = event.message;
   const key = sourceKey(event.source);
+  // Task 8: group messages the bot ignores must return above this, or they use up the group's limit.
+  const verdict = key ? rateLimit(key) : "allow";
+  if (verdict !== "allow") {
+    if (verdict === "notify") {
+      console.log(`Rate limit reached for ${key}`);
+      const userId = event.source?.userId;
+      const lineLanguage = userId ? await languages.lineLanguage(userId) : undefined;
+      await reply(event.replyToken, MESSAGES[localeFromLine(lineLanguage) ?? languages.defaultLocale].rateLimited);
+    }
+    return;
+  }
   const command = parseCommand(text);
   if (command) {
     const resetHistory = () => {

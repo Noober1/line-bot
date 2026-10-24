@@ -2,12 +2,13 @@ import { Database } from "bun:sqlite";
 import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { webhook } from "@line/bot-sdk";
 import { translatePrompt } from "./commands";
-import { AI_HISTORY_LIMIT, handleEvents } from "./events";
+import { AI_HISTORY_LIMIT, handleEvents, type Languages } from "./events";
 import { createSessionStore, type SessionStore, type StoredMessage } from "./session";
 import { createSettingsStore, type SettingsStore } from "./settings";
 
 const USER_U1: webhook.Source = { type: "user", userId: "U1" };
 const USER_U2: webhook.Source = { type: "user", userId: "U2" };
+const ID_LANGUAGES: Languages = { lineLanguage: async () => undefined, defaultLocale: "id" };
 
 function textEvent(text: string, replyToken?: string, source?: webhook.Source): webhook.Event {
   return {
@@ -391,5 +392,44 @@ describe("handleEvents", () => {
       defaultLocale: "id",
     });
     expect(lineLanguage).not.toHaveBeenCalled();
+  });
+
+  test("over the rate limit the chat gets one notice, no AI call, nothing saved", async () => {
+    const reply = okReply();
+    const ai = echoAi();
+    const rateLimit = mock((_key: string) => "notify" as const);
+    await handleEvents([textEvent("halo", "rt-1", USER_U1)], reply, sessions, ai, settings, ID_LANGUAGES, rateLimit);
+    expect(reply).toHaveBeenCalledWith("rt-1", "Pesannya terlalu banyak. Tunggu sebentar lalu coba lagi.");
+    expect(ai).not.toHaveBeenCalled();
+    expect(sessions.recent("U1", 10)).toEqual([]);
+  });
+
+  test("a dropped message gets no reply and no AI call", async () => {
+    const reply = okReply();
+    const ai = echoAi();
+    await handleEvents([textEvent("/ping", "rt-1", USER_U1)], reply, sessions, ai, settings, ID_LANGUAGES, () => "drop");
+    expect(reply).not.toHaveBeenCalled();
+    expect(ai).not.toHaveBeenCalled();
+  });
+
+  test("the rate limit is per chat: a group message counts for the group", async () => {
+    const rateLimit = mock((_key: string) => "allow" as const);
+    const group: webhook.Source = { type: "group", groupId: "C1", userId: "U1" };
+    await handleEvents([textEvent("halo", "rt-1", group)], okReply(), sessions, echoAi(), settings, ID_LANGUAGES, rateLimit);
+    expect(rateLimit).toHaveBeenCalledWith("C1");
+  });
+
+  test("non-text events do not count toward the rate limit", async () => {
+    const rateLimit = mock((_key: string) => "allow" as const);
+    const follow = { type: "follow", replyToken: "rt-1", follow: { isUnblocked: false } } as webhook.Event;
+    await handleEvents([follow], okReply(), sessions, echoAi(), settings, ID_LANGUAGES, rateLimit);
+    expect(rateLimit).not.toHaveBeenCalled();
+  });
+
+  test("the rate-limit notice is in the sender's LINE language", async () => {
+    const reply = okReply();
+    await handleEvents([textEvent("halo", "rt-1", USER_U1)], reply, sessions, echoAi(), settings,
+      { lineLanguage: async () => "ja", defaultLocale: "id" }, () => "notify");
+    expect(reply).toHaveBeenCalledWith("rt-1", "メッセージが多すぎます。少し待ってからもう一度お試しください。");
   });
 });

@@ -95,10 +95,18 @@ AI_API_KEY=                               # optional: only if 9router has REQUIR
 
 - If the AI fails (9router down, timeout after 40 s, error status, empty answer), the bot
   sends **no reply**, logs `Failed to handle event: ...`, and saves nothing.
-- Answers are cut to 4500 characters (LINE's limit is 5000).
+- Long answers are split into up to 5 messages of at most 5000 characters (LINE's limits), at a paragraph, line or sentence break when possible.
 - Chat text is sent to whatever provider your 9router model or combo uses. Choose accordingly.
 - Keep 9router on localhost, or turn on `REQUIRE_API_KEY=true`, and change its default
   dashboard password (`INITIAL_PASSWORD`, default `123456`).
+
+## Limits
+
+- `RATE_LIMIT_PER_MINUTE` (default 10, `0` = off): messages per minute the bot handles per chat
+  (a user, or a whole group). The first message over the limit gets a short notice in the sender's
+  language; the rest of that minute is ignored. The count resets when the bot restarts.
+- Duplicate webhook events (LINE redelivery) are skipped by `webhookEventId`, remembered for 24 h in
+  the `seen_events` table. Logged as `Skipped duplicate event <id>`.
 
 ## Translate
 

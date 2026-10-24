@@ -20,8 +20,6 @@ export const SYSTEM_PROMPT =
   'each list item on its own line starting with "• ", and emoji only sparingly. ' +
   "Never format text with Markdown or LINE syntax: no *, **, #, _, ~, backticks, code blocks or tables.";
 export const MAX_ANSWER_TOKENS = 1000;
-// LINE rejects text over 5000 characters; stay below it. Task 9 splits long answers instead.
-export const MAX_REPLY_CHARS = 4500;
 // The LINE reply token is short-lived (about 60 s), so give up before it expires.
 export const AI_TIMEOUT_MS = 40_000;
 
@@ -51,6 +49,6 @@ export function createAi(config: AiConfig, fetchFn: FetchFn = fetch, timeoutMs =
     if (typeof content !== "string" || !content.trim()) {
       throw new Error("AI returned no text");
     }
-    return content.trim().slice(0, MAX_REPLY_CHARS);
+    return content.trim();
   };
 }

@@ -18,6 +18,7 @@ describe("loadConfig", () => {
       ai: { baseUrl: "http://localhost:20128/v1", apiKey: undefined, model: "combo-chat" },
       defaultSettings: { translate: "en" },
       defaultLocale: "id",
+      rateLimitPerMinute: 10,
     });
   });
 
@@ -130,6 +131,20 @@ describe("loadConfig", () => {
       loadConfig({ LINE_CHANNEL_SECRET: "s3cr3t" });
     } catch (error) {
       expect(String(error)).not.toContain("s3cr3t");
+    }
+  });
+
+  test("uses RATE_LIMIT_PER_MINUTE when set; 0 turns the limit off; blank falls back to 10", () => {
+    expect(loadConfig({ ...validEnv, RATE_LIMIT_PER_MINUTE: " 30 " }).rateLimitPerMinute).toBe(30);
+    expect(loadConfig({ ...validEnv, RATE_LIMIT_PER_MINUTE: "0" }).rateLimitPerMinute).toBe(0);
+    expect(loadConfig({ ...validEnv, RATE_LIMIT_PER_MINUTE: "  " }).rateLimitPerMinute).toBe(10);
+  });
+
+  test("throws on a RATE_LIMIT_PER_MINUTE that is not a whole number >= 0", () => {
+    for (const value of ["-1", "1.5", "abc"]) {
+      expect(() => loadConfig({ ...validEnv, RATE_LIMIT_PER_MINUTE: value })).toThrow(
+        `Invalid RATE_LIMIT_PER_MINUTE: ${value} (use a whole number, 0 = no limit)`,
+      );
     }
   });
 });

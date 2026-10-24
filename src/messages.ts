@@ -26,6 +26,8 @@ export type Messages = {
   readonly settingReset: (key: string, value: string) => string;
   readonly invalidValue: (value: string, key: string, hint: string) => string;
   readonly settingChanged: (key: string, value: string) => string;
+  // Sent once when a chat goes over RATE_LIMIT_PER_MINUTE; later messages in that minute get no reply.
+  readonly rateLimited: string;
 };
 
 const id: Messages = {
@@ -56,6 +58,7 @@ const id: Messages = {
   settingReset: (key, value) => `${key} kembali ke bawaan: ${value}.`,
   invalidValue: (value, key, hint) => `Nilai ${value} tidak valid untuk ${key}. Pakai ${hint}.`,
   settingChanged: (key, value) => `${key} diubah ke ${value}.`,
+  rateLimited: "Pesannya terlalu banyak. Tunggu sebentar lalu coba lagi.",
 };
 
 const en: Messages = {
@@ -86,6 +89,7 @@ const en: Messages = {
   settingReset: (key, value) => `${key} is back to the default: ${value}.`,
   invalidValue: (value, key, hint) => `Value ${value} is not valid for ${key}. Use ${hint}.`,
   settingChanged: (key, value) => `${key} changed to ${value}.`,
+  rateLimited: "Too many messages. Please wait a moment and try again.",
 };
 
 const ja: Messages = {
@@ -116,6 +120,7 @@ const ja: Messages = {
   settingReset: (key, value) => `${key} を既定値に戻しました: ${value}。`,
   invalidValue: (value, key, hint) => `${value} は ${key} に使えない値です。${hint} を指定してください。`,
   settingChanged: (key, value) => `${key} を ${value} に変更しました。`,
+  rateLimited: "メッセージが多すぎます。少し待ってからもう一度お試しください。",
 };
 
 const zhHans: Messages = {
@@ -145,6 +150,7 @@ const zhHans: Messages = {
   settingReset: (key, value) => `${key} 已恢复默认：${value}。`,
   invalidValue: (value, key, hint) => `${value} 不是 ${key} 的有效值。请使用${hint}。`,
   settingChanged: (key, value) => `${key} 已更改为 ${value}。`,
+  rateLimited: "消息太多了，请稍等片刻再试。",
 };
 
 const zhHant: Messages = {
@@ -174,6 +180,7 @@ const zhHant: Messages = {
   settingReset: (key, value) => `${key} 已恢復預設：${value}。`,
   invalidValue: (value, key, hint) => `${value} 不是 ${key} 的有效值。請使用${hint}。`,
   settingChanged: (key, value) => `${key} 已變更為 ${value}。`,
+  rateLimited: "訊息太多了，請稍候再試。",
 };
 
 export const MESSAGES: Readonly<Record<Locale, Messages>> = { id, en, ja, "zh-Hans": zhHans, "zh-Hant": zhHant };

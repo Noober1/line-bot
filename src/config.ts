@@ -14,6 +14,8 @@ export type Config = {
   readonly defaultSettings: Settings;
   // Reply language when the user's LINE language is unknown or not supported.
   readonly defaultLocale: Locale;
+  // Messages per minute the bot handles per chat (user, group or room). 0 = no limit.
+  readonly rateLimitPerMinute: number;
 };
 
 type Env = Record<string, string | undefined>;
@@ -25,6 +27,7 @@ const DEFAULT_DATABASE_PATH = "bot.sqlite";
 const DEFAULT_AI_BASE_URL = "http://localhost:20128/v1";
 const DEFAULT_TRANSLATE_LANG = "en";
 const DEFAULT_REPLY_LANG: Locale = "id";
+const DEFAULT_RATE_LIMIT_PER_MINUTE = 10;
 
 export function loadConfig(env: Env): Config {
   const missing = REQUIRED_KEYS.filter((key) => !env[key]?.trim());
@@ -47,6 +50,13 @@ export function loadConfig(env: Env): Config {
     throw new Error(`Invalid DEFAULT_REPLY_LANG: ${env.DEFAULT_REPLY_LANG} (use one of: ${LOCALES.join(", ")})`);
   }
 
+  const rateLimitPerMinute = env.RATE_LIMIT_PER_MINUTE?.trim()
+    ? Number(env.RATE_LIMIT_PER_MINUTE)
+    : DEFAULT_RATE_LIMIT_PER_MINUTE;
+  if (!Number.isInteger(rateLimitPerMinute) || rateLimitPerMinute < 0) {
+    throw new Error(`Invalid RATE_LIMIT_PER_MINUTE: ${env.RATE_LIMIT_PER_MINUTE} (use a whole number, 0 = no limit)`);
+  }
+
   return {
     port,
     lineChannelSecret: env.LINE_CHANNEL_SECRET!,
@@ -63,6 +73,7 @@ export function loadConfig(env: Env): Config {
     },
     defaultSettings: { translate },
     defaultLocale,
+    rateLimitPerMinute,
   };
 }
 

@@ -1,5 +1,4 @@
 import type { AiConfig } from "./ai";
-import type { Allowlist } from "./allowlist";
 import { LOCALES, parseLocale, type Locale } from "./language";
 import { parseSettingValue, type Settings } from "./settings";
 
@@ -7,7 +6,10 @@ export type Config = {
   readonly port: number;
   readonly lineChannelSecret: string;
   readonly lineChannelAccessToken: string;
-  readonly allowlist: Allowlist;
+  // Operator: the only user with AI chat in a 1:1 chat, passes the access check in every group. Undefined = none.
+  readonly ownerUserId: string | undefined;
+  // Allowed groups one admin may hold at a time; the owner has no limit.
+  readonly maxGroupsPerUser: number;
   readonly databasePath: string;
   readonly ai: AiConfig;
   // Global defaults for per-user settings (/config).
@@ -16,6 +18,8 @@ export type Config = {
   readonly defaultLocale: Locale;
   // Messages per minute the bot handles per chat (user, group or room). 0 = no limit.
   readonly rateLimitPerMinute: number;
+  // Printed at startup, e.g. a removed env key that is still set.
+  readonly warnings: readonly string[];
 };
 
 type Env = Record<string, string | undefined>;
@@ -28,6 +32,10 @@ const DEFAULT_AI_BASE_URL = "http://localhost:20128/v1";
 const DEFAULT_TRANSLATE_LANG = "en";
 const DEFAULT_REPLY_LANG: Locale = "id";
 const DEFAULT_RATE_LIMIT_PER_MINUTE = 10;
+const DEFAULT_MAX_GROUPS_PER_USER = 3;
+const REMOVED_KEYS = ["ALLOWED_USER_IDS", "ALLOWED_GROUP_IDS"] as const;
+// A LINE user ID: "U" and 32 lowercase hex characters.
+export const LINE_USER_ID = /^U[0-9a-f]{32}$/;
 
 export function loadConfig(env: Env): Config {
   const missing = REQUIRED_KEYS.filter((key) => !env[key]?.trim());
@@ -57,14 +65,28 @@ export function loadConfig(env: Env): Config {
     throw new Error(`Invalid RATE_LIMIT_PER_MINUTE: ${env.RATE_LIMIT_PER_MINUTE} (use a whole number, 0 = no limit)`);
   }
 
+  const ownerUserId = env.OWNER_USER_ID?.trim() || undefined;
+  if (ownerUserId && !LINE_USER_ID.test(ownerUserId)) {
+    throw new Error(`Invalid OWNER_USER_ID: ${ownerUserId} (use a LINE user ID: U and 32 hex characters)`);
+  }
+
+  const maxGroupsPerUser = env.MAX_GROUPS_PER_USER?.trim()
+    ? Number(env.MAX_GROUPS_PER_USER)
+    : DEFAULT_MAX_GROUPS_PER_USER;
+  if (!Number.isInteger(maxGroupsPerUser) || maxGroupsPerUser < 1) {
+    throw new Error(`Invalid MAX_GROUPS_PER_USER: ${env.MAX_GROUPS_PER_USER} (use a whole number above 0)`);
+  }
+
+  const warnings = REMOVED_KEYS.filter((key) => env[key]?.trim()).map(
+    (key) => `${key} is no longer used and is ignored: groups are allowed with /approve in a DM to the bot. Remove it from .env.`,
+  );
+
   return {
     port,
     lineChannelSecret: env.LINE_CHANNEL_SECRET!,
     lineChannelAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN!,
-    allowlist: {
-      userIds: parseIdList(env.ALLOWED_USER_IDS),
-      groupIds: parseIdList(env.ALLOWED_GROUP_IDS),
-    },
+    ownerUserId,
+    maxGroupsPerUser,
     databasePath: env.DATABASE_PATH?.trim() || DEFAULT_DATABASE_PATH,
     ai: {
       baseUrl: env.AI_BASE_URL?.trim() || DEFAULT_AI_BASE_URL,
@@ -74,9 +96,6 @@ export function loadConfig(env: Env): Config {
     defaultSettings: { translate },
     defaultLocale,
     rateLimitPerMinute,
+    warnings,
   };
-}
-
-function parseIdList(value: string | undefined): ReadonlySet<string> {
-  return new Set((value ?? "").split(",").map((id) => id.trim()).filter(Boolean));
 }

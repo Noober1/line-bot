@@ -1,8 +1,14 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { webhook } from "@line/bot-sdk";
+import type { Access } from "./access-commands";
+import { filterDms } from "./allowlist";
 import { translatePrompt } from "./commands";
-import { AI_HISTORY_LIMIT, handleEvents, type Languages } from "./events";
+import { createDedupe } from "./dedupe";
+import { AI_HISTORY_LIMIT, handleEvents as handle, NOT_PERMITTED_NOTICE_MS, type Languages } from "./events";
+import { createGroupStore, type GroupStore } from "./groups";
+import type { RateLimit } from "./ratelimit";
+import { MESSAGES } from "./messages";
 import { createSessionStore, type SessionStore, type StoredMessage } from "./session";
 import { createSettingsStore, type SettingsStore } from "./settings";
 
@@ -15,7 +21,13 @@ const ROOM_R1: webhook.Source = { type: "room", roomId: "R1", userId: "U1" };
 const BOT_MENTION: webhook.Mention = { mentionees: [{ type: "user", index: 0, length: 7, userId: "Ubot", isSelf: true }] };
 const ELYSIA_USAGE_ID = "Pakai: /elysia <pesan>. Di grup, bisa juga mention bot lalu tulis pesannya.";
 
-function textEvent(text: string, replyToken?: string, source?: webhook.Source, mention?: webhook.Mention): webhook.Event {
+// U1 is the owner (see the Access in the tests below), C1 and C9 are allowed groups.
+function textEvent(
+  text: string,
+  replyToken?: string,
+  source: webhook.Source | undefined = USER_U1,
+  mention?: webhook.Mention,
+): webhook.Event {
   return {
     type: "message",
     replyToken,
@@ -43,13 +55,39 @@ describe("handleEvents", () => {
   const errorSpy = spyOn(console, "error").mockImplementation(() => {});
   let sessions: SessionStore;
   let settings: SettingsStore;
+  let groups: GroupStore;
+  let access: Access;
+  let clock = 0;
 
   beforeEach(() => {
     errorSpy.mockClear();
+    clock = 0;
     const db = new Database(":memory:");
     sessions = createSessionStore(db);
     settings = createSettingsStore(db, { translate: "en" });
+    groups = createGroupStore(db, () => clock);
+    access = {
+      groups,
+      groupSettings: createSettingsStore(db, { translate: "en" }, "group_settings"),
+      ownerUserId: "U1",
+      maxGroupsPerUser: 3,
+      groupName: async (groupId) => `nama ${groupId}`,
+    };
+    // C1 and C9 are allowed, with U7 as admin.
+    for (const groupId of ["C1", "C9"]) groups.approve(groups.request(groupId, "U7").id);
   });
+
+  function handleEvents(
+    events: webhook.Event[],
+    reply: Parameters<typeof handle>[1],
+    sessionStore: SessionStore,
+    ai: Parameters<typeof handle>[3],
+    settingsStore: SettingsStore,
+    languages: Languages = ID_LANGUAGES,
+    rateLimit: RateLimit = () => "allow",
+  ) {
+    return handle(events, reply, sessionStore, ai, settingsStore, languages, rateLimit, access);
+  }
 
   afterAll(() => {
     errorSpy.mockRestore();
@@ -223,7 +261,7 @@ describe("handleEvents", () => {
     ]);
   });
 
-  test("group, other group, room and 1:1 histories never leak into each other", async () => {
+  test("group, other group and 1:1 histories never leak into each other; a room is ignored", async () => {
     sessions.append("C1", "user", "rahasia grup 1");
     sessions.append("C2", "user", "rahasia grup 2");
     sessions.append("R1", "user", "rahasia room");
@@ -237,17 +275,18 @@ describe("handleEvents", () => {
     await handleEvents(events, okReply(), sessions, ai, settings);
     const sent = ai.mock.calls.map(([messages]) => messages.map((message) => message.content));
     expect(sent).toContainEqual(["rahasia grup 1", "tanya"]);
-    expect(sent).toContainEqual(["rahasia room", "tanya"]);
     expect(sent).toContainEqual(["rahasia pribadi", "tanya"]);
-    expect(sent).toHaveLength(3);
+    expect(sent).toHaveLength(2);
   });
 
-  test("a message without a usable source is answered without history", async () => {
+  test("an event without a source, or a 1:1 source without user ID, is ignored", async () => {
     const reply = okReply();
     const ai = echoAi();
-    await handleEvents([textEvent("halo", "rt-1")], reply, sessions, ai, settings);
-    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "halo" }]);
-    expect(reply).toHaveBeenCalledWith("rt-1", "re: halo");
+    const noUser = { type: "user" } as webhook.Source;
+    const noSource = { type: "message", replyToken: "rt-1", message: { type: "text", id: "m1", text: "halo", quoteToken: "q" } } as webhook.Event;
+    await handleEvents([noSource, textEvent("halo", "rt-2", noUser)], reply, sessions, ai, settings);
+    expect(reply).not.toHaveBeenCalled();
+    expect(ai).not.toHaveBeenCalled();
   });
 
   test("an AI failure is logged, sends no reply, saves nothing, and does not stop other events", async () => {
@@ -257,7 +296,10 @@ describe("handleEvents", () => {
       return "oke";
     });
     await handleEvents(
-      [textEvent("rusak", "rt-bad", USER_U1), textEvent("sehat", "rt-ok", USER_U2)],
+      [
+        textEvent("rusak", "rt-bad", USER_U1),
+        textEvent("@Elysia sehat", "rt-ok", { type: "group", groupId: "C1", userId: "U2" }, BOT_MENTION),
+      ],
       reply,
       sessions,
       ai,
@@ -282,7 +324,7 @@ describe("handleEvents", () => {
     expect(settings.stored("U1")).toEqual({ translate: "ja" });
   });
 
-  const CONFIG_IN_GROUP_ID = "Ganti pengaturan lewat chat pribadi (DM) dengan bot aja, jangan di grup.";
+  const CONFIG_IN_GROUP_ID = MESSAGES.id.configInGroup;
 
   test("/config in a group is refused with the DM hint, settings are neither read nor changed", async () => {
     settings.set("U1", "translate", "ja");
@@ -299,14 +341,10 @@ describe("handleEvents", () => {
     expect(ai).not.toHaveBeenCalled();
   });
 
-  test("/config in a room or from a group member without a user ID is refused the same way", async () => {
+  test("/config from a group member without a user ID is refused the same way", async () => {
     const reply = okReply();
     const noId = { type: "group", groupId: "C1" } as webhook.Source;
-    await handleEvents(
-      [textEvent("/CONFIG translate ja", "rt-1", ROOM_R1), textEvent("/config translate ja", "rt-2", noId)],
-      reply, sessions, echoAi(), settings,
-    );
-    expect(reply).toHaveBeenCalledWith("rt-1", CONFIG_IN_GROUP_ID);
+    await handleEvents([textEvent("/config translate ja", "rt-2", noId)], reply, sessions, echoAi(), settings);
     expect(reply).toHaveBeenCalledWith("rt-2", CONFIG_IN_GROUP_ID);
     expect(settings.stored("U1")).toEqual({});
   });
@@ -317,7 +355,7 @@ describe("handleEvents", () => {
       lineLanguage: async () => "ja",
       defaultLocale: "id",
     });
-    expect(reply).toHaveBeenCalledWith("rt-1", "設定の変更はグループではなく、ボットとの個別チャットで行ってください。");
+    expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.ja.configInGroup);
   });
 
   test("/config in a 1:1 chat still lists settings", async () => {
@@ -516,10 +554,10 @@ describe("handleEvents", () => {
     expect(ai).not.toHaveBeenCalled();
   });
 
-  test("a mention of the bot in a room is answered", async () => {
+  test("a room message is ignored, even a mention of the bot", async () => {
     const reply = okReply();
     await handleEvents([textEvent("@Elysia halo", "rt-1", ROOM_R1, BOT_MENTION)], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "re: halo");
+    expect(reply).not.toHaveBeenCalled();
   });
 
   test("/elysia <text> in a group goes to the AI with the group's history and is saved", async () => {
@@ -574,5 +612,222 @@ describe("handleEvents", () => {
     const ai = echoAi();
     await handleEvents([textEvent("/elysia halo", "rt-1", USER_U1)], okReply(), sessions, ai, settings);
     expect(ai).toHaveBeenCalledWith([{ role: "user", content: "halo" }]);
+  });
+
+  describe("group access", () => {
+    const EN: Languages = { lineLanguage: async () => undefined, defaultLocale: "en" };
+    const inGroup = (groupId: string, userId?: string) => ({ type: "group", groupId, userId }) as webhook.Source;
+    const mention = (text: string, token: string, groupId: string, userId?: string) =>
+      textEvent(`@Elysia ${text}`, token, inGroup(groupId, userId), BOT_MENTION);
+    const joinEvent = (groupId: string, token = "rt-join") =>
+      ({ type: "join", replyToken: token, source: { type: "group", groupId } }) as webhook.Event;
+    const leaveEvent = (groupId: string) => ({ type: "leave", source: { type: "group", groupId } }) as webhook.Event;
+    const dm = (text: string, userId: string) => textEvent(text, "rt-dm", { type: "user", userId });
+    const T = MESSAGES.id;
+
+    test("join in a new group creates a pending group and replies with the join notice in the default language", async () => {
+      const reply = okReply();
+      await handleEvents([joinEvent("C5")], reply, sessions, echoAi(), settings, EN);
+      expect(groups.get("C5")).toMatchObject({ status: "pending", requesterId: null });
+      expect(reply).toHaveBeenCalledWith("rt-join", MESSAGES.en.joinNotice);
+    });
+
+    test("join in a denied group is silent and the group stays denied", async () => {
+      groups.setStatus(groups.join("C5").id, "denied");
+      const reply = okReply();
+      await handleEvents([joinEvent("C5")], reply, sessions, echoAi(), settings);
+      expect(reply).not.toHaveBeenCalled();
+      expect(groups.get("C5")?.status).toBe("denied");
+    });
+
+    test("join in an allowed group resets it to pending", async () => {
+      await handleEvents([joinEvent("C1")], okReply(), sessions, echoAi(), settings);
+      expect(groups.get("C1")).toMatchObject({ status: "pending", requesterId: null });
+    });
+
+    test("a mention in a pending group records the first requester and answers not-permitted", async () => {
+      groups.join("C5");
+      const reply = okReply();
+      const ai = echoAi();
+      await handleEvents([mention("halo", "rt-1", "C5", "U2")], reply, sessions, ai, settings);
+      const { id } = groups.get("C5")!;
+      expect(reply).toHaveBeenCalledWith("rt-1", T.notPermitted(id));
+      expect(groups.get("C5")?.requesterId).toBe("U2");
+      expect(ai).not.toHaveBeenCalled();
+      clock += NOT_PERMITTED_NOTICE_MS + 1;
+      await handleEvents([mention("halo", "rt-2", "C5", "U3")], reply, sessions, ai, settings);
+      expect(reply).toHaveBeenCalledWith("rt-2", T.notPermitted(id));
+      expect(groups.get("C5")?.requesterId).toBe("U2");
+    });
+
+    test("the not-permitted notice is throttled per group", async () => {
+      groups.join("C5");
+      const reply = okReply();
+      await handleEvents([mention("a", "rt-1", "C5", "U2")], reply, sessions, echoAi(), settings);
+      clock += NOT_PERMITTED_NOTICE_MS / 2;
+      await handleEvents([mention("b", "rt-2", "C5", "U2")], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledTimes(1);
+      clock += NOT_PERMITTED_NOTICE_MS / 2;
+      await handleEvents([mention("c", "rt-3", "C5", "U2")], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledTimes(2);
+    });
+
+    test("a member without a user ID gets unknown-sender; the next user becomes requester", async () => {
+      const reply = okReply();
+      await handleEvents([mention("halo", "rt-1", "C5")], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", T.unknownSender);
+      expect(groups.get("C5")?.requesterId).toBeNull();
+      clock += NOT_PERMITTED_NOTICE_MS + 1;
+      await handleEvents([mention("halo", "rt-2", "C5", "U3")], reply, sessions, echoAi(), settings);
+      expect(groups.get("C5")?.requesterId).toBe("U3");
+    });
+
+    test("a plain message in an unknown group creates nothing and gets no reply", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent("halo semua", "rt-1", inGroup("C5", "U2"))], reply, sessions, echoAi(), settings);
+      expect(reply).not.toHaveBeenCalled();
+      expect(groups.get("C5")).toBeNull();
+    });
+
+    test("a denied group is silent for members and does not use the rate limit; the owner still gets through", async () => {
+      groups.setStatus(groups.request("C5", "U2").id, "denied");
+      const reply = okReply();
+      const ai = echoAi();
+      const rateLimit = mock((_key: string) => "allow" as const);
+      await handleEvents(
+        [mention("halo", "rt-1", "C5", "U2"), textEvent("/ping", "rt-2", inGroup("C5", "U2"))],
+        reply, sessions, ai, settings, ID_LANGUAGES, rateLimit,
+      );
+      expect(reply).not.toHaveBeenCalled();
+      expect(rateLimit).not.toHaveBeenCalled();
+      await handleEvents([mention("halo", "rt-3", "C5", "U1")], reply, sessions, ai, settings);
+      expect(reply).toHaveBeenCalledWith("rt-3", "re: halo");
+    });
+
+    test("any member of an allowed group is answered", async () => {
+      const reply = okReply();
+      await handleEvents([mention("halo", "rt-1", "C1", "U5")], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", "re: halo");
+    });
+
+    test("the owner talking in a pending group allows it and becomes its admin", async () => {
+      groups.request("C5", "U2");
+      const reply = okReply();
+      await handleEvents([mention("halo", "rt-1", "C5", "U1")], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", "re: halo");
+      expect(groups.get("C5")).toMatchObject({ status: "allowed", requesterId: "U1", adminId: "U1" });
+    });
+
+    test("a group the owner spoke in first cannot be taken over by another member", async () => {
+      await handleEvents([mention("halo", "rt-1", "C5", "U1")], okReply(), sessions, echoAi(), settings);
+      const reply = okReply();
+      await handleEvents([mention("halo", "rt-2", "C5", "U2")], reply, sessions, echoAi(), settings);
+      expect(groups.get("C5")).toMatchObject({ status: "allowed", requesterId: "U1", adminId: "U1" });
+      expect(reply).toHaveBeenCalledWith("rt-2", "re: halo");
+    });
+
+    test("the owner does not take over another admin's allowed group or a denied one", async () => {
+      groups.setStatus(groups.request("C5", "U2").id, "denied");
+      await handleEvents([mention("halo", "rt-1", "C1", "U1"), mention("halo", "rt-2", "C5", "U1")], okReply(), sessions, echoAi(), settings);
+      expect(groups.get("C1")).toMatchObject({ status: "allowed", adminId: "U7" });
+      expect(groups.get("C5")).toMatchObject({ status: "denied", adminId: null });
+    });
+
+    test("the access check runs before the rate limit", async () => {
+      groups.join("C5");
+      const rateLimit = mock((_key: string) => "allow" as const);
+      await handleEvents([mention("halo", "rt-1", "C5", "U2")], okReply(), sessions, echoAi(), settings, ID_LANGUAGES, rateLimit);
+      expect(rateLimit).not.toHaveBeenCalled();
+    });
+
+    test("leave marks the group left; joining again makes it pending and keeps the group settings", async () => {
+      access.groupSettings.set("C1", "translate", "ja");
+      await handleEvents([leaveEvent("C1")], okReply(), sessions, echoAi(), settings);
+      expect(groups.get("C1")?.status).toBe("left");
+      await handleEvents([joinEvent("C1")], okReply(), sessions, echoAi(), settings);
+      expect(groups.get("C1")).toMatchObject({ status: "pending", requesterId: null });
+      expect(access.groupSettings.stored("C1")).toEqual({ translate: "ja" });
+    });
+
+    test("a room join or mention is ignored and creates nothing", async () => {
+      const reply = okReply();
+      const roomJoin = { type: "join", replyToken: "rt-1", source: { type: "room", roomId: "R5" } } as webhook.Event;
+      await handleEvents([roomJoin, textEvent("@Elysia halo", "rt-2", ROOM_R1, BOT_MENTION)], reply, sessions, echoAi(), settings);
+      expect(reply).not.toHaveBeenCalled();
+      expect(groups.list().map((group) => group.groupId)).toEqual(["C1", "C9"]);
+    });
+
+    test("the owner can chat with the AI and list groups in a DM", async () => {
+      const reply = okReply();
+      await handleEvents([dm("halo", "U1"), dm("/groups", "U1")], reply, sessions, echoAi(), settings);
+      expect(reply.mock.calls[0]![1]).toBe("re: halo");
+      expect(reply.mock.calls[1]![1]).toContain(T.groupsTitle);
+    });
+
+    test("a non-owner in a DM gets the groups-only text instead of the AI or other commands", async () => {
+      const reply = okReply();
+      const ai = echoAi();
+      for (const text of ["halo", "/translate x", "/reset", "/elysia hi", "/admin 1 reset"]) {
+        await handleEvents([dm(text, "U2")], reply, sessions, ai, settings);
+      }
+      expect(reply.mock.calls.map(([, text]) => text)).toEqual(Array(5).fill(T.dmGroupsOnly));
+      expect(ai).not.toHaveBeenCalled();
+    });
+
+    test("a non-owner in a DM may use /ping, /help, /groups and /config", async () => {
+      const reply = okReply();
+      for (const text of ["/ping", "/groups", "/config translate ko"]) {
+        await handleEvents([dm(text, "U2")], reply, sessions, echoAi(), settings);
+      }
+      expect(reply.mock.calls.map(([, text]) => text)).toEqual(["pong", T.groupsEmpty, T.settingChanged("translate", "ko")]);
+      expect(settings.stored("U2")).toEqual({ translate: "ko" });
+    });
+
+    test("access commands other than /groupconfig are unknown commands in a group", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent("/groups", "rt-1", inGroup("C1", "U7")), textEvent("/approve 1", "rt-2", inGroup("C1", "U7"))], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", T.unknownCommand("groups"));
+      expect(reply).toHaveBeenCalledWith("rt-2", T.unknownCommand("approve"));
+    });
+
+    test("/groupconfig in a group is for the admin only", async () => {
+      const reply = okReply();
+      await handleEvents(
+        [textEvent("/groupconfig translate ko", "rt-1", inGroup("C1", "U7")), textEvent("/groupconfig translate fr", "rt-2", inGroup("C1", "U5"))],
+        reply, sessions, echoAi(), settings,
+      );
+      expect(reply).toHaveBeenCalledWith("rt-1", T.settingChanged("translate", "ko"));
+      expect(reply).toHaveBeenCalledWith("rt-2", T.groupConfigNotAdmin);
+      expect(access.groupSettings.stored("C1")).toEqual({ translate: "ko" });
+    });
+
+    test("/translate in a group: the user's value beats the group's, which beats the LINE language and the default", async () => {
+      access.groupSettings.set("C1", "translate", "ko");
+      const run = async (userId: string | undefined, lineLanguage?: string) => {
+        const ai = echoAi();
+        await handleEvents([textEvent("/translate halo", "rt-1", inGroup("C1", userId))], okReply(), sessions, ai, settings, {
+          lineLanguage: async () => lineLanguage,
+          defaultLocale: "id",
+        });
+        return ai.mock.calls[0]![1];
+      };
+      expect(await run("U5", "ja-JP")).toBe(translatePrompt("ko"));
+      expect(await run(undefined)).toBe(translatePrompt("ko"));
+      settings.set("U5", "translate", "fr");
+      expect(await run("U5", "ja-JP")).toBe(translatePrompt("fr"));
+      access.groupSettings.unset("C1", "translate");
+      settings.unset("U5", "translate");
+      expect(await run("U5", "ja-JP")).toBe(translatePrompt("ja"));
+    });
+
+    test("a redelivered event does not record or reply twice", async () => {
+      groups.join("C5");
+      const dedupe = createDedupe(new Database(":memory:"));
+      const event = { ...mention("halo", "rt-1", "C5", "U2"), webhookEventId: "e1" } as webhook.Event;
+      const reply = okReply();
+      await handleEvents(dedupe(filterDms([event])), reply, sessions, echoAi(), settings);
+      await handleEvents(dedupe(filterDms([event])), reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledTimes(1);
+    });
   });
 });

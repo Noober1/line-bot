@@ -1,11 +1,13 @@
 import { Database } from "bun:sqlite";
 import { messagingApi } from "@line/bot-sdk";
 import { createAi } from "./src/ai";
-import { filterAllowed } from "./src/allowlist";
+import type { Access } from "./src/access-commands";
+import { filterDms } from "./src/allowlist";
 import { createApp } from "./src/app";
 import { loadConfig, type Config } from "./src/config";
 import { createDedupe } from "./src/dedupe";
 import { handleEvents, type Languages, type Reply } from "./src/events";
+import { createGroupStore } from "./src/groups";
 import { createLineLanguage } from "./src/language";
 import { createRateLimit } from "./src/ratelimit";
 import { createSessionStore } from "./src/session";
@@ -20,12 +22,7 @@ try {
   process.exit(1);
 }
 
-const { allowlist } = config;
-if (allowlist.userIds.size === 0 && allowlist.groupIds.size === 0) {
-  console.warn(
-    "Allowlist is empty: every event will be ignored. Set ALLOWED_USER_IDS and/or ALLOWED_GROUP_IDS in .env.",
-  );
-}
+for (const warning of config.warnings) console.warn(warning);
 
 const client = new messagingApi.MessagingApiClient({
   channelAccessToken: config.lineChannelAccessToken,
@@ -39,6 +36,13 @@ const reply: Reply = async (replyToken, text) => {
 const db = new Database(config.databasePath);
 const sessions = createSessionStore(db);
 const settings = createSettingsStore(db, config.defaultSettings);
+const access: Access = {
+  groups: createGroupStore(db),
+  groupSettings: createSettingsStore(db, config.defaultSettings, "group_settings"),
+  ownerUserId: config.ownerUserId,
+  maxGroupsPerUser: config.maxGroupsPerUser,
+  groupName: async (groupId) => (await client.getGroupSummary(groupId)).groupName,
+};
 const dedupe = createDedupe(db);
 const rateLimit = createRateLimit(config.rateLimitPerMinute);
 const ai = createAi(config.ai);
@@ -51,7 +55,7 @@ const languages: Languages = {
 const app = createApp({
   channelSecret: config.lineChannelSecret,
   onEvents: (events) =>
-    void handleEvents(dedupe(filterAllowed(events, allowlist)), reply, sessions, ai, settings, languages, rateLimit),
+    void handleEvents(dedupe(filterDms(events)), reply, sessions, ai, settings, languages, rateLimit, access),
 });
 
 const server = Bun.serve({ port: config.port, fetch: app });

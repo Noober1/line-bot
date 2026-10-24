@@ -35,23 +35,39 @@ bun run tunnel   # cloudflared tunnel --url http://localhost:3000
 Set `https://<tunnel-host>/webhook` as the Webhook URL in LINE Developers Console
 (Messaging API tab), turn on "Use webhook", then press "Verify".
 
-## Allowlist
+## Access
 
-The bot is private. It only handles events from IDs listed in `.env`:
+The bot works in groups that were allowed, and keeps their status in SQLite (table `groups`).
+Nothing is listed in `.env`, and nothing needs a restart.
 
-```bash
-ALLOWED_USER_IDS=Uxxxxxxxx,Uyyyyyyyy   # users: allowed in 1:1 chat and in any group
-ALLOWED_GROUP_IDS=Cxxxxxxxx,Rxxxxxxxx  # groups and multi-person chats: every member allowed
-```
+1. Add the bot to a group. It replies once: mention the bot, then allow the group in a DM.
+2. The first member who mentions the bot (or sends a `/` command) becomes the group's requester.
+   LINE does not tell the bot who invited it, so whoever adds the bot should mention it right away.
+   The bot answers `notPermitted` (at most once per 10 minutes per group) until the group is allowed.
+   LINE for PC sends no user ID: such a member is asked to let a phone user mention the bot.
+3. The requester DMs the bot: `/groups` shows the group ID, `/approve <id>` allows it.
+   The requester becomes the group's admin. One user can be admin of at most `MAX_GROUPS_PER_USER` (default 3) groups.
+4. Every member of an allowed group can use the bot as usual (mention, `/elysia`, commands).
 
-Every other event is dropped without a reply and logged with its IDs (never the
-message text), for example `Ignored join event from group Cxxxx (unknown user)`.
+| Command (DM only) | Who | Effect |
+|---|---|---|
+| `/groups` | anyone | your groups (owner: all), as `#<id> <status> <name>` |
+| `/approve <id>` | requester, owner | pending -> allowed (owner: also denied -> allowed) |
+| `/deny <id>` | admin | allowed -> pending (approve again later) |
+| `/deny <id>` | owner | -> denied: the bot stays silent in that group (the owner still passes) |
+| `/admin <id> <userId\|reset>` | owner | sets or clears the group's requester and admin |
+| `/groupconfig <id> [...]` | admin, owner | group settings (see "User settings") |
 
-- Your own user ID: LINE Developers Console > channel > Basic settings > "Your user ID".
-- A group ID: invite the bot to the group, then copy the ID from that log line.
+Wrong IDs, other people's groups and impossible changes all get the same error.
 
-If both lists are empty the bot starts, ignores everything, and prints a warning.
-Restart the bot after editing `.env`.
+- When the owner talks to the bot in a group that is new, pending or left, that group is allowed at once and the
+  owner becomes its admin (use `/admin <id> <userId>` to hand it over). Allowed groups keep their admin; denied stay denied.
+- `OWNER_USER_ID` (optional): the operator. Passes in every group, sees and manages all groups, and is the only user
+  who can chat with the AI in a DM. Everyone else gets only the commands above plus `/config`, `/help` and `/ping` in a DM.
+- When the bot is removed from a group, the group becomes `left` (settings and admin are kept); adding it again
+  needs a new `/approve`.
+- Multi-person chats (rooms) are not supported and are ignored.
+- `ALLOWED_USER_IDS` and `ALLOWED_GROUP_IDS` are no longer used; the bot warns at startup if one is still set.
 
 ## Commands
 
@@ -65,8 +81,10 @@ A text message that starts with `/` is a command. Names are case-insensitive.
 | `/translate <teks>` | the text translated into your `translate` language (see "Translate") |
 | `/config` | shows or changes your own settings (see "User settings") |
 | `/elysia <teks>` | talks to the AI like a plain message, with the chat history (in a group: the way to ask without a mention) |
+| `/groupconfig [...]` | in a group: the group's settings, admin and owner only (see "User settings") |
+| `/groups`, `/approve`, `/deny`, `/admin` | DM only, see "Access" |
 
-In a group or multi-person chat the AI answers only a message that mentions the bot (type `@` and pick the bot) or starts with `/elysia`. The mention itself is not sent to the AI; `@All` does not count. Other messages are ignored, and do not count toward the rate limit. Commands work as usual. `/elysia` alone, or a bare mention, gets a short usage text.
+In an allowed group the AI answers only a message that mentions the bot (type `@` and pick the bot) or starts with `/elysia`. The mention itself is not sent to the AI; `@All` does not count. Other messages are ignored, and do not count toward the rate limit. Commands work as usual. `/elysia` alone, or a bare mention, gets a short usage text.
 
 An unknown command gets `Perintah /<name> tidak dikenal. Ketik /help untuk daftar perintah.`
 (in Indonesian; see "Reply language" for the other languages).
@@ -115,7 +133,7 @@ AI_API_KEY=                               # optional: only if 9router has REQUIR
 
 `/translate <teks>` sends only that text to the AI, with a translate prompt. It uses no chat
 history and saves nothing. The target language is your `translate` setting (see "User settings");
-in a group, the sender's setting.
+in a group, the sender's setting, else the group's setting (`/groupconfig`).
 
 ```
 /translate selamat pagi         -> Good morning   (translate = en)
@@ -129,7 +147,7 @@ in a group, the sender's setting.
 ## User settings
 
 Each user has their own settings, stored in the same SQLite file (table `user_settings`).
-In a group, `/config` changes the settings of the person who sends it, never the group's.
+In a group, `/config` is refused: change your own settings in a DM with the bot.
 
 ```
 /config                    list your settings
@@ -137,11 +155,18 @@ In a group, `/config` changes the settings of the person who sends it, never the
 /config translate reset    go back to the default
 ```
 
+A group has its own settings (table `group_settings`), changed by its admin or the owner:
+
+```
+/groupconfig                       in the group: list or change, same format as /config
+/groupconfig <id> translate ja     in a DM, with the ID from /groups
+```
+
 | Setting | Values | Default |
 |---|---|---|
 | `translate` | ISO 639-1 code (`en`, `id`, `ja`, `ko`, `zh`, ...) | your LINE app language, else `DEFAULT_TRANSLATE_LANG` (`en`) |
 
-Order: your own value > your LINE app language (see "Reply language") > `DEFAULT_TRANSLATE_LANG` > `en`.
+Order: your own value > the group's value (in that group) > your LINE app language (see "Reply language") > `DEFAULT_TRANSLATE_LANG` > `en`.
 LINE does not send a user ID for some group members (for example LINE desktop users);
 they get `Pengaturan tidak bisa dipakai: LINE tidak mengirim ID kamu.`
 
@@ -154,8 +179,8 @@ affected: the AI answers in the language the user writes in.
 
 - The language comes from LINE's Get profile API, only when a command is sent, and is cached per user
   in SQLite (table `user_languages`) for 7 days.
-- Get profile works only for users who added the bot as a friend. In a group, a member who is not a
-  friend gets `DEFAULT_REPLY_LANG`. The bot logs `Get profile failed for user <id>: 404 - Not Found`
+- Get profile works for friends of the bot and for users who sent it a message without adding it; not for users who
+  blocked it. Then the user gets `DEFAULT_REPLY_LANG`, the bot logs `Get profile failed for user <id>: ...`
   and tries again on their next command.
 - LINE leaves out the language when the user has not consented to its privacy policy; that user
   also gets `DEFAULT_REPLY_LANG`.

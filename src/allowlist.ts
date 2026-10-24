@@ -1,25 +1,14 @@
 import type { webhook } from "@line/bot-sdk";
 
-export type Allowlist = {
-  readonly userIds: ReadonlySet<string>;
-  // Also holds room IDs: rooms are checked against the group list.
-  readonly groupIds: ReadonlySet<string>;
-};
-
-export function isAllowed(source: webhook.Source | undefined, allowlist: Allowlist): boolean {
-  if (!source) return false;
-  if (source.userId && allowlist.userIds.has(source.userId)) return true;
-  if (source.type === "group") return allowlist.groupIds.has(source.groupId);
-  if (source.type === "room") return allowlist.groupIds.has(source.roomId);
-  return false;
-}
-
-// Logs IDs of ignored events (never message text) so the owner can find new group IDs.
-export function filterAllowed(events: webhook.Event[], allowlist: Allowlist): webhook.Event[] {
+// Keeps 1:1 chats (anyone may DM the bot) and groups (the access gate in events.ts decides there).
+// Drops rooms (legacy multi-person chats: not supported, no summary API) and events without a usable source.
+// Logs IDs of dropped events, never message text.
+export function filterDms(events: webhook.Event[]): webhook.Event[] {
   return events.filter((event) => {
-    const allowed = isAllowed(event.source, allowlist);
-    if (!allowed) console.log(`Ignored ${event.type} event from ${describeSource(event.source)}`);
-    return allowed;
+    const { source } = event;
+    const kept = source?.type === "group" || (source?.type === "user" && Boolean(source.userId));
+    if (!kept) console.log(`Ignored ${event.type} event from ${describeSource(source)}`);
+    return kept;
   });
 }
 

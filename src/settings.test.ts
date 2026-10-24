@@ -16,6 +16,32 @@ function memoryStore(db = new Database(":memory:")) {
   return createSettingsStore(db, DEFAULTS);
 }
 
+describe("group settings", () => {
+  test("the group value beats the LINE language", () => {
+    expect(resolveSettings({}, DEFAULTS, "ja", { translate: "ko" }).translate).toBe("ko");
+  });
+
+  test("the user's value beats the group value", () => {
+    expect(resolveSettings({ translate: "fr" }, DEFAULTS, "ja", { translate: "ko" }).translate).toBe("fr");
+  });
+
+  test("settingsFor passes the group settings into resolved", () => {
+    const settings = settingsFor(memoryStore(), "U1", "ja", { translate: "ko" });
+    expect(settings.resolved().translate).toBe("ko");
+  });
+
+  test("group_settings is its own table", () => {
+    const db = new Database(":memory:");
+    const users = createSettingsStore(db, DEFAULTS);
+    const groups = createSettingsStore(db, DEFAULTS, "group_settings");
+    users.set("C1", "translate", "ja");
+    groups.set("C1", "translate", "ko");
+    expect(users.stored("C1")).toEqual({ translate: "ja" });
+    expect(groups.stored("C1")).toEqual({ translate: "ko" });
+    expect(db.query("SELECT group_id FROM group_settings").all()).toHaveLength(1);
+  });
+});
+
 describe("parseSettingKey", () => {
   test("accepts a known key, case-insensitive", () => {
     expect(parseSettingKey("translate")).toBe("translate");

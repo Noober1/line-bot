@@ -98,24 +98,29 @@ export function translatePrompt(language: string): string {
   );
 }
 
-// "/config" lists, "/config <name> <value>" sets, "/config <name> reset" goes back to the default.
+const CONFIG_COMMAND = "/config";
+
 function configText(args: string, context: CommandContext): string {
   const t = MESSAGES[context.locale];
-  const { settings } = context;
-  if (!settings) {
-    return t.settingsUnavailable;
-  }
+  return context.settings
+    ? settingsText(args, context.settings, t, t.settingsTitle, CONFIG_COMMAND)
+    : t.settingsUnavailable;
+}
+
+// "<command>" lists, "<command> <name> <value>" sets, "<command> <name> reset" goes back to the default.
+// Shared by /config (the sender's settings) and /groupconfig (a group's settings).
+export function settingsText(args: string, settings: UserSettings, t: Messages, title: string, command: string): string {
   const [name = "", ...rest] = args.trim().split(/\s+/);
   const value = rest.join(" ");
   if (!name) {
-    return settingsListText(settings, t);
+    return settingsListText(settings, t, title, command);
   }
   const key = parseSettingKey(name);
   if (!key) {
-    return t.unknownSetting(shorten(name));
+    return t.unknownSetting(shorten(name), command);
   }
   if (!value) {
-    return t.settingUsage(key, t.settingHints[key]);
+    return t.settingUsage(command, key, t.settingHints[key]);
   }
   if (value.toLowerCase() === RESET_VALUE) {
     settings.unset(key);
@@ -129,14 +134,14 @@ function configText(args: string, context: CommandContext): string {
   return t.settingChanged(key, parsed);
 }
 
-function settingsListText(settings: UserSettings, t: Messages): string {
+function settingsListText(settings: UserSettings, t: Messages, title: string, command: string): string {
   const stored = settings.stored();
   const resolved = settings.resolved();
   const lines = [...SETTINGS.keys()].flatMap((key) => [
     `${key} = ${resolved[key]}${Object.hasOwn(stored, key) ? "" : t.defaultMark} - ${t.settingDescriptions[key]}`,
     `  ${t.valueLabel}: ${t.settingHints[key]}`,
   ]);
-  return [t.settingsTitle, ...lines, t.settingsChangeHelp, t.settingsResetHelp(RESET_VALUE)].join("\n");
+  return [title, ...lines, t.settingsChangeHelp(command), t.settingsResetHelp(command, RESET_VALUE)].join("\n");
 }
 
 function shorten(text: string): string {

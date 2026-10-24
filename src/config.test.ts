@@ -13,29 +13,53 @@ describe("loadConfig", () => {
       port: 3000,
       lineChannelSecret: "secret",
       lineChannelAccessToken: "token",
-      allowlist: { userIds: new Set(), groupIds: new Set() },
+      ownerUserId: undefined,
+      maxGroupsPerUser: 3,
       databasePath: "bot.sqlite",
       ai: { baseUrl: "http://localhost:20128/v1", apiKey: undefined, model: "combo-chat" },
       defaultSettings: { translate: "en" },
       defaultLocale: "id",
       rateLimitPerMinute: 10,
+      warnings: [],
     });
   });
 
-  test("parses comma-separated allowlists, trimming spaces and dropping blanks", () => {
-    const config = loadConfig({
-      ...validEnv,
-      ALLOWED_USER_IDS: " U1 , U2,,",
-      ALLOWED_GROUP_IDS: "C1",
-    });
-    expect(config.allowlist.userIds).toEqual(new Set(["U1", "U2"]));
-    expect(config.allowlist.groupIds).toEqual(new Set(["C1"]));
+  test("a removed allowlist key that is still set gives a warning naming it", () => {
+    expect(loadConfig({ ...validEnv, ALLOWED_USER_IDS: "U1" }).warnings).toEqual([
+      expect.stringContaining("ALLOWED_USER_IDS"),
+    ]);
+    expect(loadConfig({ ...validEnv, ALLOWED_GROUP_IDS: "C1" }).warnings).toEqual([
+      expect.stringContaining("ALLOWED_GROUP_IDS"),
+    ]);
   });
 
-  test("blank allowlist values give empty sets", () => {
-    const config = loadConfig({ ...validEnv, ALLOWED_USER_IDS: "  ", ALLOWED_GROUP_IDS: " , " });
-    expect(config.allowlist.userIds.size).toBe(0);
-    expect(config.allowlist.groupIds.size).toBe(0);
+  test("blank removed allowlist keys give no warning", () => {
+    expect(loadConfig({ ...validEnv, ALLOWED_USER_IDS: "  ", ALLOWED_GROUP_IDS: "" }).warnings).toEqual([]);
+  });
+
+  test("uses OWNER_USER_ID when valid, trimmed; blank means none", () => {
+    const id = `U${"a".repeat(32)}`;
+    expect(loadConfig({ ...validEnv, OWNER_USER_ID: ` ${id} ` }).ownerUserId).toBe(id);
+    expect(loadConfig({ ...validEnv, OWNER_USER_ID: "  " }).ownerUserId).toBeUndefined();
+  });
+
+  test("throws on an OWNER_USER_ID that is not a LINE user ID", () => {
+    for (const value of ["Uabc", `U${"A".repeat(32)}`, `C${"a".repeat(32)}`]) {
+      expect(() => loadConfig({ ...validEnv, OWNER_USER_ID: value })).toThrow(`Invalid OWNER_USER_ID: ${value}`);
+    }
+  });
+
+  test("uses MAX_GROUPS_PER_USER when set; blank falls back to 3", () => {
+    expect(loadConfig({ ...validEnv, MAX_GROUPS_PER_USER: "5" }).maxGroupsPerUser).toBe(5);
+    expect(loadConfig({ ...validEnv, MAX_GROUPS_PER_USER: "  " }).maxGroupsPerUser).toBe(3);
+  });
+
+  test("throws on a MAX_GROUPS_PER_USER that is not a whole number above 0", () => {
+    for (const value of ["0", "-1", "1.5", "abc"]) {
+      expect(() => loadConfig({ ...validEnv, MAX_GROUPS_PER_USER: value })).toThrow(
+        `Invalid MAX_GROUPS_PER_USER: ${value}`,
+      );
+    }
   });
 
   test("uses PORT when set", () => {

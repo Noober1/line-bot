@@ -38,3 +38,13 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # sqlite data (used from task 6)
 *.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# dev-only docs
+TASKS.md
+plans/
+
+# codegraph index
+.codegraph/

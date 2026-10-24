@@ -1,0 +1,33 @@
+// LINE limits: a text message holds 5000 UTF-16 code units (= JS string length); a reply holds 5 messages.
+export const MAX_TEXT_LENGTH = 5000;
+export const MAX_REPLY_MESSAGES = 5;
+
+// Best break first. A break only counts in the second half of a part, so no part ends up tiny.
+const BREAKS = ["\n\n", "\n", "。", "！", "？", ". ", "! ", "? ", " "];
+
+// Never returns more than maxParts parts; the last one ends with "…" when text was dropped.
+export function splitReply(text: string, max = MAX_TEXT_LENGTH, maxParts = MAX_REPLY_MESSAGES): string[] {
+  const parts: string[] = [];
+  let rest = text;
+  while (rest.length > max) {
+    if (parts.length === maxParts - 1) {
+      parts.push(`${rest.slice(0, cutAt(rest, max - 1)).trimEnd()}…`);
+      return parts;
+    }
+    const cut = cutAt(rest, max);
+    parts.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  return rest ? [...parts, rest] : parts;
+}
+
+function cutAt(text: string, max: number): number {
+  const window = text.slice(0, max);
+  for (const mark of BREAKS) {
+    const at = window.lastIndexOf(mark);
+    if (at > max / 2) return at + mark.length;
+  }
+  // Hard cut, but not between the two halves of a surrogate pair (emoji).
+  const last = text.charCodeAt(max - 1);
+  return last >= 0xd800 && last <= 0xdbff ? max - 1 : max;
+}

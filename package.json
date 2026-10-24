@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun --watch index.ts",
     "start": "bun index.ts",
+    "tunnel": "cloudflared tunnel --url http://localhost:3000",
     "test": "bun test"
   },
   "devDependencies": {
@@ -13,5 +14,8 @@
   },
   "peerDependencies": {
     "typescript": "^7"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "11.3.0"
   }
 }

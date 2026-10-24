@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
-import type { Ai } from "./ai";
+import { SYSTEM_PROMPT, type Ai } from "./ai";
 import { MAX_TRANSLATE_CHARS, parseCommand, runCommand, translatePrompt, type CommandContext } from "./commands";
 import { LOCALES } from "./language";
 import type { StoredMessage } from "./session";
@@ -246,6 +246,14 @@ describe("/translate", () => {
     const ai = answering("hello");
     await translate("halo", ai);
     expect(ai.mock.calls[0]![1]).toBe(translatePrompt("en"));
+  });
+
+  test("does not use the chat SYSTEM_PROMPT or its bullet style", async () => {
+    const ai = answering("x");
+    await translate("halo", ai);
+    const system = ai.mock.calls[0]![1];
+    expect(system).not.toBe(SYSTEM_PROMPT);
+    expect(system).not.toContain("•");
   });
 
   test("uses the LINE language before the global default", async () => {

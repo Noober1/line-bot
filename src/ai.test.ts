@@ -111,3 +111,23 @@ describe("createAi", () => {
     await expect(createAi(config, hanging, 20)([{ role: "user", content: "x" }])).rejects.toThrow();
   });
 });
+
+describe("SYSTEM_PROMPT", () => {
+  test("is in English and asks for a reply in the user's language", () => {
+    expect(SYSTEM_PROMPT).toContain("You are an assistant in a LINE chat.");
+    expect(SYSTEM_PROMPT).toContain("Always reply in the same language the user writes in.");
+  });
+
+  test("asks for plain but tidy text: blank-line paragraphs, • bullets, sparse emoji", () => {
+    expect(SYSTEM_PROMPT).toContain("short paragraphs separated by a blank line");
+    expect(SYSTEM_PROMPT).toContain('"• "');
+    expect(SYSTEM_PROMPT).toContain("emoji");
+  });
+
+  test("forbids every formatting character LINE mobile shows raw", () => {
+    for (const forbidden of ["*", "**", "#", "_", "~", "backticks", "tables"]) {
+      expect(SYSTEM_PROMPT).toContain(forbidden);
+    }
+    expect(SYSTEM_PROMPT).toContain("Never format text");
+  });
+});

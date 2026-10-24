@@ -12,9 +12,13 @@ export type Ai = (messages: readonly StoredMessage[], system?: string) => Promis
 
 type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
 
+// LINE mobile shows *bold* and Markdown as raw characters, so ask for plain text that still reads well.
 export const SYSTEM_PROMPT =
-  "Kamu asisten di chat LINE. Jawab singkat dan jelas, dalam bahasa yang dipakai pengguna. " +
-  "LINE tidak menampilkan Markdown, jadi pakai teks biasa tanpa tanda ** # atau tabel.";
+  "You are an assistant in a LINE chat. Answer briefly and clearly. " +
+  "Always reply in the same language the user writes in. " +
+  "LINE shows replies as plain text, so keep them plain but tidy: short paragraphs separated by a blank line, " +
+  'each list item on its own line starting with "• ", and emoji only sparingly. ' +
+  "Never format text with Markdown or LINE syntax: no *, **, #, _, ~, backticks, code blocks or tables.";
 export const MAX_ANSWER_TOKENS = 1000;
 // LINE rejects text over 5000 characters; stay below it. Task 9 splits long answers instead.
 export const MAX_REPLY_CHARS = 4500;

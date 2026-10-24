@@ -9,13 +9,18 @@ import { createSettingsStore, type SettingsStore } from "./settings";
 const USER_U1: webhook.Source = { type: "user", userId: "U1" };
 const USER_U2: webhook.Source = { type: "user", userId: "U2" };
 const ID_LANGUAGES: Languages = { lineLanguage: async () => undefined, defaultLocale: "id" };
+const GROUP_C1: webhook.Source = { type: "group", groupId: "C1", userId: "U1" };
+const ROOM_R1: webhook.Source = { type: "room", roomId: "R1", userId: "U1" };
+// "@Elysia" (7 chars) at the start of the text, as LINE sends a mention of the bot.
+const BOT_MENTION: webhook.Mention = { mentionees: [{ type: "user", index: 0, length: 7, userId: "Ubot", isSelf: true }] };
+const ELYSIA_USAGE_ID = "Pakai: /elysia <pesan>. Di grup, bisa juga mention bot lalu tulis pesannya.";
 
-function textEvent(text: string, replyToken?: string, source?: webhook.Source): webhook.Event {
+function textEvent(text: string, replyToken?: string, source?: webhook.Source, mention?: webhook.Mention): webhook.Event {
   return {
     type: "message",
     replyToken,
     source,
-    message: { type: "text", id: "m1", text, quoteToken: "q" },
+    message: { type: "text", id: "m1", text, quoteToken: "q", mention },
   } as webhook.Event;
 }
 
@@ -139,8 +144,8 @@ describe("handleEvents", () => {
 
   test("messages in a group go to the group's shared history", async () => {
     const events = [
-      textEvent("dari U1", "rt-1", { type: "group", groupId: "C1", userId: "U1" }),
-      textEvent("dari U2", "rt-2", { type: "group", groupId: "C1", userId: "U2" }),
+      textEvent("@Elysia dari U1", "rt-1", { type: "group", groupId: "C1", userId: "U1" }, BOT_MENTION),
+      textEvent("@Elysia dari U2", "rt-2", { type: "group", groupId: "C1", userId: "U2" }, BOT_MENTION),
     ];
     await handleEvents(events, okReply(), sessions, echoAi(), settings);
     expect(sessions.recent("C1", 10)).toHaveLength(4);
@@ -209,8 +214,8 @@ describe("handleEvents", () => {
   test("the AI gets the group's shared history, whoever sends the new message", async () => {
     const group: webhook.Source = { type: "group", groupId: "C1", userId: "U1" };
     const ai = echoAi();
-    await handleEvents([textEvent("dari U1", "rt-1", group)], okReply(), sessions, ai, settings);
-    await handleEvents([textEvent("dari U2", "rt-2", { ...group, userId: "U2" })], okReply(), sessions, ai, settings);
+    await handleEvents([textEvent("@Elysia dari U1", "rt-1", group, BOT_MENTION)], okReply(), sessions, ai, settings);
+    await handleEvents([textEvent("@Elysia dari U2", "rt-2", { ...group, userId: "U2" }, BOT_MENTION)], okReply(), sessions, ai, settings);
     expect(ai).toHaveBeenLastCalledWith([
       { role: "user", content: "dari U1" },
       { role: "assistant", content: "re: dari U1" },
@@ -224,12 +229,12 @@ describe("handleEvents", () => {
     sessions.append("R1", "user", "rahasia room");
     sessions.append("U1", "user", "rahasia pribadi");
     const ai = echoAi();
-    const sources: webhook.Source[] = [
-      { type: "group", groupId: "C1", userId: "U1" },
-      { type: "room", roomId: "R1", userId: "U1" },
-      USER_U1,
+    const events = [
+      textEvent("@Elysia tanya", "rt", GROUP_C1, BOT_MENTION),
+      textEvent("@Elysia tanya", "rt", ROOM_R1, BOT_MENTION),
+      textEvent("tanya", "rt", USER_U1),
     ];
-    await handleEvents(sources.map((source) => textEvent("tanya", "rt", source)), okReply(), sessions, ai, settings);
+    await handleEvents(events, okReply(), sessions, ai, settings);
     const sent = ai.mock.calls.map(([messages]) => messages.map((message) => message.content));
     expect(sent).toContainEqual(["rahasia grup 1", "tanya"]);
     expect(sent).toContainEqual(["rahasia room", "tanya"]);
@@ -415,7 +420,7 @@ describe("handleEvents", () => {
   test("the rate limit is per chat: a group message counts for the group", async () => {
     const rateLimit = mock((_key: string) => "allow" as const);
     const group: webhook.Source = { type: "group", groupId: "C1", userId: "U1" };
-    await handleEvents([textEvent("halo", "rt-1", group)], okReply(), sessions, echoAi(), settings, ID_LANGUAGES, rateLimit);
+    await handleEvents([textEvent("/ping", "rt-1", group)], okReply(), sessions, echoAi(), settings, ID_LANGUAGES, rateLimit);
     expect(rateLimit).toHaveBeenCalledWith("C1");
   });
 
@@ -431,5 +436,116 @@ describe("handleEvents", () => {
     await handleEvents([textEvent("halo", "rt-1", USER_U1)], reply, sessions, echoAi(), settings,
       { lineLanguage: async () => "ja", defaultLocale: "id" }, () => "notify");
     expect(reply).toHaveBeenCalledWith("rt-1", "メッセージが多すぎます。少し待ってからもう一度お試しください。");
+  });
+
+  test("in a group a message that mentions the bot goes to the AI without the mention, and is saved so", async () => {
+    const reply = okReply();
+    const ai = echoAi();
+    await handleEvents([textEvent("@Elysia apa kabar?", "rt-1", GROUP_C1, BOT_MENTION)], reply, sessions, ai, settings);
+    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "apa kabar?" }]);
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: apa kabar?");
+    expect(sessions.recent("C1", 10)).toEqual([
+      { role: "user", content: "apa kabar?" },
+      { role: "assistant", content: "re: apa kabar?" },
+    ]);
+  });
+
+  test("a mention after an emoji is cut by UTF-16 index; other people's mentions stay", async () => {
+    // "😀" is 2 UTF-16 code units, so "@Elysia" starts at 8; in the second text "@Budi" is at 0, "@Elysia" at 6.
+    const ai = echoAi();
+    const own: webhook.Mention = { mentionees: [{ type: "user", index: 8, length: 7, userId: "Ubot", isSelf: true }] };
+    await handleEvents([textEvent("😀 halo @Elysia tolong", "rt-1", GROUP_C1, own)], okReply(), sessions, ai, settings);
+    const mixed: webhook.Mention = { mentionees: [
+      { type: "user", index: 0, length: 5, userId: "U2", isSelf: false },
+      { type: "user", index: 6, length: 7, userId: "Ubot", isSelf: true },
+    ] };
+    await handleEvents([textEvent("@Budi @Elysia tanya dong", "rt-2", { type: "group", groupId: "C9", userId: "U1" }, mixed)], okReply(), sessions, ai, settings);
+    expect(ai.mock.calls[0]![0].at(-1)).toEqual({ role: "user", content: "😀 halo  tolong" });
+    expect(ai.mock.calls[1]![0].at(-1)).toEqual({ role: "user", content: "@Budi  tanya dong" });
+  });
+
+  test("a plain group or room message is ignored and does not count toward the rate limit", async () => {
+    const reply = okReply();
+    const ai = echoAi();
+    const rateLimit = mock((_key: string) => "allow" as const);
+    const events = [textEvent("halo semua", "rt-1", GROUP_C1), textEvent("halo semua", "rt-2", ROOM_R1)];
+    await handleEvents(events, reply, sessions, ai, settings, ID_LANGUAGES, rateLimit);
+    expect(reply).not.toHaveBeenCalled();
+    expect(ai).not.toHaveBeenCalled();
+    expect(rateLimit).not.toHaveBeenCalled();
+    expect(sessions.recent("C1", 10)).toEqual([]);
+  });
+
+  test("a mention of someone else or @All is ignored", async () => {
+    const reply = okReply();
+    const ai = echoAi();
+    const other: webhook.Mention = { mentionees: [{ type: "user", index: 0, length: 5, userId: "U2", isSelf: false }] };
+    const all: webhook.Mention = { mentionees: [{ type: "all", index: 0, length: 4 }] };
+    await handleEvents(
+      [textEvent("@Budi halo", "rt-1", GROUP_C1, other), textEvent("@All rapat jam 3", "rt-2", GROUP_C1, all)],
+      reply, sessions, ai, settings,
+    );
+    expect(reply).not.toHaveBeenCalled();
+    expect(ai).not.toHaveBeenCalled();
+  });
+
+  test("a mention of the bot in a room is answered", async () => {
+    const reply = okReply();
+    await handleEvents([textEvent("@Elysia halo", "rt-1", ROOM_R1, BOT_MENTION)], reply, sessions, echoAi(), settings);
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: halo");
+  });
+
+  test("/elysia <text> in a group goes to the AI with the group's history and is saved", async () => {
+    sessions.append("C1", "user", "lama");
+    sessions.append("C1", "assistant", "jawaban lama");
+    const ai = echoAi();
+    const reply = okReply();
+    await handleEvents([textEvent("/Elysia  apa kabar?", "rt-1", GROUP_C1)], reply, sessions, ai, settings);
+    expect(ai).toHaveBeenCalledWith([
+      { role: "user", content: "lama" },
+      { role: "assistant", content: "jawaban lama" },
+      { role: "user", content: "apa kabar?" },
+    ]);
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: apa kabar?");
+    expect(sessions.recent("C1", 10).at(-2)).toEqual({ role: "user", content: "apa kabar?" });
+  });
+
+  test("/elysia without text, or a bare mention of the bot, gets the usage message and no AI call", async () => {
+    const reply = okReply();
+    const ai = echoAi();
+    await handleEvents(
+      [textEvent("/elysia   ", "rt-1", GROUP_C1), textEvent("@Elysia ", "rt-2", GROUP_C1, BOT_MENTION)],
+      reply, sessions, ai, settings,
+    );
+    expect(reply).toHaveBeenCalledWith("rt-1", ELYSIA_USAGE_ID);
+    expect(reply).toHaveBeenCalledWith("rt-2", ELYSIA_USAGE_ID);
+    expect(ai).not.toHaveBeenCalled();
+    expect(sessions.recent("C1", 10)).toEqual([]);
+  });
+
+  test("the /elysia usage message is in the sender's LINE language", async () => {
+    const reply = okReply();
+    await handleEvents([textEvent("/elysia", "rt-1", GROUP_C1)], reply, sessions, echoAi(), settings,
+      { lineLanguage: async () => "ja", defaultLocale: "id" });
+    expect(reply).toHaveBeenCalledWith("rt-1", "使い方: /elysia <メッセージ>。グループではボットをメンションしてメッセージを書くこともできます。");
+  });
+
+  test("other commands still work in a group without a mention, /help lists /elysia", async () => {
+    const reply = okReply();
+    await handleEvents([textEvent("/ping", "rt-1", GROUP_C1), textEvent("/help", "rt-2", GROUP_C1)], reply, sessions, echoAi(), settings);
+    expect(reply).toHaveBeenCalledWith("rt-1", "pong");
+    expect(reply.mock.calls.find(([token]) => token === "rt-2")![1]).toContain("/elysia - ");
+  });
+
+  test("a 1:1 message still goes straight to the AI, mention data or not", async () => {
+    const ai = echoAi();
+    await handleEvents([textEvent("@Elysia halo", "rt-1", USER_U1, BOT_MENTION)], okReply(), sessions, ai, settings);
+    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "@Elysia halo" }]);
+  });
+
+  test("/elysia <text> in a 1:1 chat goes to the AI", async () => {
+    const ai = echoAi();
+    await handleEvents([textEvent("/elysia halo", "rt-1", USER_U1)], okReply(), sessions, ai, settings);
+    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "halo" }]);
   });
 });

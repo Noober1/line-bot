@@ -1,7 +1,7 @@
 import type { Locale } from "./language";
 import type { SettingKey } from "./settings";
 
-export type CommandName = "help" | "ping" | "reset" | "translate" | "config";
+export type CommandName = "help" | "ping" | "reset" | "translate" | "config" | "elysia";
 
 // The bot's own reply texts. AI answers are not here: the AI picks the user's language itself.
 export type Messages = {
@@ -28,6 +28,8 @@ export type Messages = {
   readonly settingChanged: (key: string, value: string) => string;
   // Sent once when a chat goes over RATE_LIMIT_PER_MINUTE; later messages in that minute get no reply.
   readonly rateLimited: string;
+  // /elysia without text, or a group message that only mentions the bot.
+  readonly elysiaUsage: string;
 };
 
 const id: Messages = {
@@ -38,6 +40,7 @@ const id: Messages = {
     reset: "hapus riwayat chat",
     translate: "terjemahkan teks ke bahasa pilihan kamu (atur: /config translate)",
     config: "lihat atau ubah pengaturan kamu",
+    elysia: "tanya AI (di grup: pengganti mention bot)",
   },
   historyCleared: "Riwayat chat sudah dihapus.",
   unknownCommand: (name) => `Perintah /${name} tidak dikenal. Ketik /help untuk daftar perintah.`,
@@ -59,6 +62,7 @@ const id: Messages = {
   invalidValue: (value, key, hint) => `Nilai ${value} tidak valid untuk ${key}. Pakai ${hint}.`,
   settingChanged: (key, value) => `${key} diubah ke ${value}.`,
   rateLimited: "Pesannya terlalu banyak. Tunggu sebentar lalu coba lagi.",
+  elysiaUsage: "Pakai: /elysia <pesan>. Di grup, bisa juga mention bot lalu tulis pesannya.",
 };
 
 const en: Messages = {
@@ -69,6 +73,7 @@ const en: Messages = {
     reset: "clear the chat history",
     translate: "translate text into your chosen language (set it: /config translate)",
     config: "view or change your settings",
+    elysia: "ask the AI (in a group: instead of mentioning the bot)",
   },
   historyCleared: "Chat history cleared.",
   unknownCommand: (name) => `Unknown command /${name}. Type /help for the list of commands.`,
@@ -90,6 +95,7 @@ const en: Messages = {
   invalidValue: (value, key, hint) => `Value ${value} is not valid for ${key}. Use ${hint}.`,
   settingChanged: (key, value) => `${key} changed to ${value}.`,
   rateLimited: "Too many messages. Please wait a moment and try again.",
+  elysiaUsage: "Usage: /elysia <message>. In a group you can also mention the bot and write your message.",
 };
 
 const ja: Messages = {
@@ -100,6 +106,7 @@ const ja: Messages = {
     reset: "チャット履歴を削除",
     translate: "テキストを指定の言語に翻訳（設定: /config translate）",
     config: "自分の設定を表示・変更",
+    elysia: "AI に質問（グループではボットへのメンションの代わり）",
   },
   historyCleared: "チャット履歴を削除しました。",
   unknownCommand: (name) => `/${name} は不明なコマンドです。/help でコマンド一覧を表示できます。`,
@@ -121,6 +128,7 @@ const ja: Messages = {
   invalidValue: (value, key, hint) => `${value} は ${key} に使えない値です。${hint} を指定してください。`,
   settingChanged: (key, value) => `${key} を ${value} に変更しました。`,
   rateLimited: "メッセージが多すぎます。少し待ってからもう一度お試しください。",
+  elysiaUsage: "使い方: /elysia <メッセージ>。グループではボットをメンションしてメッセージを書くこともできます。",
 };
 
 const zhHans: Messages = {
@@ -131,6 +139,7 @@ const zhHans: Messages = {
     reset: "清除聊天记录",
     translate: "将文字翻译成你选择的语言（设置：/config translate）",
     config: "查看或更改你的设置",
+    elysia: "向 AI 提问（群组中可代替 @机器人）",
   },
   historyCleared: "聊天记录已清除。",
   unknownCommand: (name) => `未知指令 /${name}。输入 /help 查看指令列表。`,
@@ -151,6 +160,7 @@ const zhHans: Messages = {
   invalidValue: (value, key, hint) => `${value} 不是 ${key} 的有效值。请使用${hint}。`,
   settingChanged: (key, value) => `${key} 已更改为 ${value}。`,
   rateLimited: "消息太多了，请稍等片刻再试。",
+  elysiaUsage: "用法：/elysia <消息>。在群组中也可以 @机器人 后输入消息。",
 };
 
 const zhHant: Messages = {
@@ -161,6 +171,7 @@ const zhHant: Messages = {
     reset: "清除聊天記錄",
     translate: "將文字翻譯成你選擇的語言（設定：/config translate）",
     config: "查看或變更你的設定",
+    elysia: "向 AI 提問（群組中可代替 @機器人）",
   },
   historyCleared: "聊天記錄已清除。",
   unknownCommand: (name) => `未知指令 /${name}。輸入 /help 查看指令列表。`,
@@ -181,6 +192,7 @@ const zhHant: Messages = {
   invalidValue: (value, key, hint) => `${value} 不是 ${key} 的有效值。請使用${hint}。`,
   settingChanged: (key, value) => `${key} 已變更為 ${value}。`,
   rateLimited: "訊息太多了，請稍候再試。",
+  elysiaUsage: "用法：/elysia <訊息>。在群組中也可以 @機器人 後輸入訊息。",
 };
 
 export const MESSAGES: Readonly<Record<Locale, Messages>> = { id, en, ja, "zh-Hans": zhHans, "zh-Hant": zhHant };

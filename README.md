@@ -64,13 +64,16 @@ A text message that starts with `/` is a command. Names are case-insensitive.
 | `/reset` | clears the chat history of this chat (in a group: the whole group's) |
 | `/translate <teks>` | the text translated into your `translate` language (see "Translate") |
 | `/config` | shows or changes your own settings (see "User settings") |
+| `/elysia <teks>` | talks to the AI like a plain message, with the chat history (in a group: the way to ask without a mention) |
+
+In a group or multi-person chat the AI answers only a message that mentions the bot (type `@` and pick the bot) or starts with `/elysia`. The mention itself is not sent to the AI; `@All` does not count. Other messages are ignored, and do not count toward the rate limit. Commands work as usual. `/elysia` alone, or a bare mention, gets a short usage text.
 
 An unknown command gets `Perintah /<name> tidak dikenal. Ketik /help untuk daftar perintah.`
 (in Indonesian; see "Reply language" for the other languages).
 
 ## Chat history
 
-Every non-command text and the bot's reply are saved in a SQLite file
+Every text sent to the AI (without the bot's mention or the /elysia prefix) and the bot's reply are saved in a SQLite file
 (`DATABASE_PATH`, default `bot.sqlite` in the working directory; git-ignored).
 
 - One history per chat: per user in a 1:1 chat, shared by everyone in a group.
@@ -82,7 +85,7 @@ The file holds chat text in plain form. Keep it private and back it up like `.en
 
 ## AI chat
 
-Any text that is not a command is sent to an AI through
+Any text that is not a command, and `/elysia <teks>` (in a group: see "Commands"), is sent to an AI through
 [9router](https://github.com/decolua/9router), an OpenAI-compatible gateway
 (`POST {AI_BASE_URL}/chat/completions`). The AI gets the newest 20 messages of the
 chat plus the new one.
@@ -144,7 +147,7 @@ they get `Pengaturan tidak bisa dipakai: LINE tidak mengirim ID kamu.`
 
 ## Reply language
 
-The bot's own texts (`/help`, `/reset`, `/config`, `/translate` usage and errors, unknown command)
+The bot's own texts (`/help`, `/reset`, `/config`, `/translate` usage and errors, `/elysia` usage, unknown command)
 come in the sender's LINE app language: `id`, `en`, `ja`, `zh-Hans` or `zh-Hant`. Any other
 language, or an unknown one, gets `DEFAULT_REPLY_LANG` (default `id`). AI chat answers are not
 affected: the AI answers in the language the user writes in.

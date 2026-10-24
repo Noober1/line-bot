@@ -75,6 +75,7 @@ describe("runCommand", () => {
         "/reset - hapus riwayat chat",
         "/translate - terjemahkan teks ke bahasa pilihan kamu (atur: /config translate)",
         "/config - lihat atau ubah pengaturan kamu",
+        "/elysia - tanya AI (di grup: pengganti mention bot)",
       ].join("\n"),
     );
   });
@@ -96,6 +97,12 @@ describe("runCommand", () => {
   test("unknown command gets a friendly error", () => {
     expect(runCommand({ name: "foo", args: "" }, noopContext)).toBe(
       "Perintah /foo tidak dikenal. Ketik /help untuk daftar perintah.",
+    );
+  });
+
+  test("/elysia through the router gives its usage, never 'unknown command' (handleEvent sends it to the AI)", () => {
+    expect(runCommand({ name: "elysia", args: "halo" }, noopContext)).toBe(
+      "Pakai: /elysia <pesan>. Di grup, bisa juga mention bot lalu tulis pesannya.",
     );
   });
 
@@ -325,6 +332,7 @@ describe("reply language", () => {
         "/reset - clear the chat history",
         "/translate - translate text into your chosen language (set it: /config translate)",
         "/config - view or change your settings",
+        "/elysia - ask the AI (in a group: instead of mentioning the bot)",
       ].join("\n"),
     );
   });
@@ -365,7 +373,7 @@ describe("reply language", () => {
     }
   });
 
-  test("every locale lists all five commands in /help", () => {
+  test("every locale lists all six commands in /help", () => {
     for (const locale of LOCALES) {
       const lines = (runCommand({ name: "help", args: "" }, { ...noopContext, locale }) as string).split("\n");
       expect(lines.slice(1).map((line) => line.split(" ")[0])).toEqual([
@@ -374,6 +382,7 @@ describe("reply language", () => {
         "/reset",
         "/translate",
         "/config",
+        "/elysia",
       ]);
     }
   });

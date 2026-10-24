@@ -43,6 +43,9 @@ const COMMANDS: ReadonlyMap<CommandName, CommandSpec> = new Map<CommandName, Com
   ],
   ["translate", { run: translateText }],
   ["config", { run: configText }],
+  // handleEvent sends "/elysia <text>" to the AI with the chat history before the router; this entry lists it
+  // in /help and gives the usage if the router is ever reached.
+  ["elysia", { run: (_args, context) => MESSAGES[context.locale].elysiaUsage }],
 ]);
 
 // Text starting with "/" (after trimming) is a command. The name is case-insensitive.

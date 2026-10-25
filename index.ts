@@ -36,8 +36,8 @@ const client = new messagingApi.MessagingApiClient({
 });
 
 // A reply token works once, so a long answer goes out as up to 5 messages in one reply.
-const reply: Reply = async (replyToken, text, quoteToken, mentions) => {
-  await client.replyMessage({ replyToken, messages: replyMessages(text, quoteToken, mentions) });
+const reply: Reply = async (replyToken, text, quoteToken, mentions, extras) => {
+  await client.replyMessage({ replyToken, messages: replyMessages(text, quoteToken, mentions, extras) });
 };
 
 // LINE accepts 5 to 60 seconds in steps of 5. The animation ends with the bot's next message.

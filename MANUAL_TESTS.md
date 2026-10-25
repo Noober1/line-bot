@@ -38,3 +38,12 @@
 6. Ganti bahasa LINE ke Inggris/Jepang/China: teks gagal/timeout mengikuti bahasa pengirim.
 7. Auto-translate on lalu matikan 9router, kirim pesan: tetap diam (tidak ada balasan error), hanya tercatat di log.
 8. `/reset` di DM dan di grup: konfirmasi "✅ Riwayat obrolan di sini sudah dihapus..." muncul; pesan berikutnya tidak lagi mengingat percakapan lama.
+
+## 17. Flex Message dan quick reply
+1. DM: `/help` tampil sebagai kartu (judul "Daftar perintah:" + baris per perintah). Cek di mobile dan desktop; di notifikasi/daftar chat yang tampil adalah teks lengkap (altText).
+2. DM: `/config` tampil sebagai kartu + tombol bahasa di bawah (English, Indonesia, ...). Tap "日本語" -> terkirim `/config translate ja` dan bot menjawab "translate diubah ke ja." Tap tombol Reset -> kembali ke default.
+3. DM sebagai owner: `/groups` tampil sebagai kartu; sebagai user non-owner tanpa grup: teks biasa "Belum ada grup...".
+4. DM: pertanyaan yang membuat AI menjawab panjang (>600 karakter, mis. "jelaskan sejarah Indonesia secara lengkap") -> kartu berjudul "Elysia" dengan paragraf; jawaban pendek tetap teks biasa.
+5. Di grup: `/help` dan jawaban AI panjang tetap teks biasa yang mengutip pesanmu (tidak ada kartu).
+6. Kartu tidak mengutip pesan di DM (batasan LINE); pastikan tidak terasa membingungkan. Kalau LINE menolak kartu (error 400 di log `reply failed`), catat isi errornya: JSON belum divalidasi ke endpoint validate LINE.
+7. Ganti bahasa LINE ke Inggris/Jepang: label tombol Reset mengikuti bahasa; label bahasa muncul dengan nama aslinya.

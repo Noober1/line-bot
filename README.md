@@ -85,6 +85,14 @@ A text message that starts with `/` is a command. Names are case-insensitive.
 | `/groupconfig [...]` | in a group: the group's settings, admin and owner only (see "User settings") |
 | `/groups`, `/approve`, `/deny`, `/admin` | DM only, see "Access" |
 
+**Cards.** In a 1:1 chat `/help`, `/groups`, a bare `/config` and an AI answer over 600 characters are sent as a
+Flex Message card (title plus rows or paragraphs), and a bare `/config` also shows the common translate
+languages as quick reply buttons (a tap sends `/config translate <code>`; the last button resets it). Every card
+has an `altText` with the whole text (cut to LINE's 400 characters), which is what notifications and quotes show.
+A text that has no body, or whose card would pass 25 KB, is sent as plain text. LINE's Flex Message has no
+quote token, so a card does **not** quote the user's message; that is why groups keep plain quoted text for
+everything, and why a reply with mentions (translate) stays a quoted text v2 message.
+
 In an allowed group the AI answers only a message that mentions the bot (type `@` and pick the bot) or starts with `/elysia`. The mention itself is not sent to the AI; `@All` does not count. Other messages are ignored, and do not count toward the rate limit (except those of a member with auto-translate on, see below). Commands work as usual. `/elysia` alone, or a bare mention, gets a short usage text.
 
 `/auto-translate` (allowed groups only) flips a switch for the sender in that group. While it is on, every

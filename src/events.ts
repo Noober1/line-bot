@@ -3,7 +3,8 @@ import { ACCESS_COMMANDS, isOwner, runAccessCommand, type Access } from "./acces
 import type { Ai } from "./ai";
 import { describeSource } from "./allowlist";
 import type { AutoTranslateStore } from "./auto-translate";
-import { autoTranslatePrompt, MAX_TRANSLATE_CHARS, parseCommand, parseInstruction, runCommand } from "./commands";
+import { autoTranslatePrompt, MAX_TRANSLATE_CHARS, parseCommand, parseInstruction, runCommand, type Command } from "./commands";
+import { LONG_ANSWER_CHARS, translateLanguageOptions, type ReplyExtras } from "./flex";
 import { localeFromLine, type LineLanguage, type Locale } from "./language";
 import { logger, preview, shortId, withEvent } from "./log";
 import { plainText, protectMentions, restoreMentions, type Mentions, type ShieldedText } from "./mentions";
@@ -16,7 +17,14 @@ import { MAX_TEXT_LENGTH, splitReply } from "./split";
 const log = logger("events");
 
 // `mentions` (placeholder -> user ID, see mentions.ts) makes the reply a text v2 message that mentions those users.
-export type Reply = (replyToken: string, text: string, quoteToken?: string, mentions?: Mentions) => Promise<void>;
+// `extras` dresses the reply as a card and/or adds quick reply buttons (flex.ts).
+export type Reply = (
+  replyToken: string,
+  text: string,
+  quoteToken?: string,
+  mentions?: Mentions,
+  extras?: ReplyExtras,
+) => Promise<void>;
 
 // Shows LINE's loading animation in a 1:1 chat (a group has none) until the bot's next message or a timeout.
 export type ShowLoading = (userId: string) => Promise<void>;
@@ -45,6 +53,8 @@ export const NOT_PERMITTED_NOTICE_MS = 10 * 60 * 1000;
 
 // What a 1:1 chat with anyone but the owner may use; everything else gets dmGroupsOnly.
 const DM_COMMANDS: ReadonlySet<string> = new Set(["groups", "approve", "deny", "groupconfig", "config", "auto-translate", "help", "ping"]);
+
+const GROUPS_COMMAND = "groups";
 
 // The only access command that also works in a group.
 const GROUP_CONFIG_COMMAND = "groupconfig";
@@ -86,7 +96,7 @@ function messageKind(event: webhook.Event): string | undefined {
 // Reply and AI are logged here, once, so every path through handleEvent is covered. Lengths only, never the text.
 function timedReply(reply: Reply): Reply {
   return async (...args) => {
-    const [, text, quoteToken, mentions] = args;
+    const [, text, quoteToken, mentions, extras] = args;
     const started = Date.now();
     try {
       await reply(...args);
@@ -95,6 +105,8 @@ function timedReply(reply: Reply): Reply {
         chars: text.length,
         quote: Boolean(quoteToken),
         mentions: mentions ? Object.keys(mentions).length : 0,
+        card: extras?.flex,
+        buttons: extras?.quickReplies?.length,
         ms: Date.now() - started,
       });
     } catch (error) {
@@ -155,8 +167,12 @@ async function handleEvent(
   const replyToken = event.replyToken;
   const quoteToken = event.message.quoteToken;
   // Every answer to a text message quotes it; join (onJoin) has no message to quote.
-  const respond = (replyText: string, mentions?: Mentions) =>
-    mentions ? reply(replyToken, replyText, quoteToken, mentions) : reply(replyToken, replyText, quoteToken);
+  const respond = (replyText: string, mentions?: Mentions, extras?: ReplyExtras) =>
+    extras
+      ? reply(replyToken, replyText, quoteToken, mentions, extras)
+      : mentions
+        ? reply(replyToken, replyText, quoteToken, mentions)
+        : reply(replyToken, replyText, quoteToken);
   // For /translate and auto-translate: mentions of other users travel through the AI as placeholders.
   const shielded = protectMentions(event.message);
   const key = sourceKey(source);
@@ -222,7 +238,8 @@ async function handleEvent(
   if (command && ACCESS_COMMANDS.has(command.name) && (!inGroup || command.name === GROUP_CONFIG_COMMAND)) {
     log.info("access command", { name: command.name });
     const { locale } = await senderLanguage(userId, languages);
-    await respond(await runAccessCommand(command, { access, userId, groupId, locale }));
+    const text = await runAccessCommand(command, { access, userId, groupId, locale });
+    await respond(text, undefined, !inGroup && command.name === GROUPS_COMMAND ? { flex: "card" } : undefined);
     return;
   }
   if (command && command.name !== ELYSIA_COMMAND) {
@@ -258,7 +275,7 @@ async function handleEvent(
       await respond(restored.text, restored.mentions);
       return;
     }
-    await respond(await runCommand(command, context));
+    await respond(await runCommand(command, context), undefined, inGroup ? undefined : commandExtras(command, locale));
     return;
   }
   const prompt = command ? command.args.trim() : (mentionPrompt ?? text);
@@ -279,7 +296,7 @@ async function handleEvent(
     await respond(isTimeout(error) ? t.aiTimeout : t.aiFailed);
     return;
   }
-  await respond(answer);
+  await respond(answer, undefined, !inGroup && answer.length > LONG_ANSWER_CHARS ? { flex: "answer" } : undefined);
   // Saved only after a successful reply, so the history holds what the user actually saw.
   if (key) {
     sessions.append(key, "user", prompt);
@@ -331,6 +348,15 @@ async function autoTranslateText(
   autoTranslate.remember(groupId, userId, plainText(body, shielded));
   const restored = restoreMentions(answer, shielded, MAX_TEXT_LENGTH);
   await respond(restored.text, restored.mentions);
+}
+
+// Cards for the list-like command answers in a 1:1 chat; /config also offers the translate languages as buttons.
+function commandExtras(command: Command, locale: Locale): ReplyExtras | undefined {
+  if (command.name === "help") return { flex: "card" };
+  if (command.name === CONFIG_COMMAND && !command.args.trim()) {
+    return { flex: "card", quickReplies: translateLanguageOptions(MESSAGES[locale].resetLabel) };
+  }
+  return undefined;
 }
 
 // createAi stops a request with AbortSignal.timeout, which rejects with a TimeoutError.

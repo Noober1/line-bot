@@ -8,7 +8,9 @@ import { autoTranslatePrompt, translatePrompt } from "./commands";
 import { createDedupe } from "./dedupe";
 import { AI_HISTORY_LIMIT, handleEvents as handle, NOT_PERMITTED_NOTICE_MS, type Languages } from "./events";
 import { createGroupStore, type GroupStore } from "./groups";
+import type { ReplyExtras } from "./flex";
 import { captureLog, configureLog } from "./log";
+import type { Mentions } from "./mentions";
 import type { RateLimit } from "./ratelimit";
 import { MESSAGES } from "./messages";
 import { createSessionStore, type SessionStore, type StoredMessage } from "./session";
@@ -39,7 +41,7 @@ function textEvent(
 }
 
 function okReply() {
-  return mock(async (_replyToken: string, _text: string, _quoteToken?: string) => {});
+  return mock(async (_replyToken: string, _text: string, _quoteToken?: string, _mentions?: Mentions, _extras?: ReplyExtras) => {});
 }
 
 // Answers "re: <text of the newest message>", so each test can tell which message was answered.
@@ -453,6 +455,55 @@ describe("handleEvents", () => {
       settings,
     );
     expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.aiFailed, "q");
+  });
+
+  describe("cards and quick replies", () => {
+    const GROUP_U2 = { type: "group", groupId: "C1", userId: "U2" } as webhook.Source;
+
+    test("/help in a 1:1 chat is sent as a card, in a group as plain quoted text", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent("/help", "rt-1", USER_U1), textEvent("/help", "rt-2", GROUP_U2)], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", expect.stringContaining("/help"), "q", undefined, { flex: "card" });
+      expect(reply).toHaveBeenCalledWith("rt-2", expect.stringContaining("/help"), "q");
+    });
+
+    test("/config without arguments is a card with the translate languages as buttons, in the sender's language", async () => {
+      const reply = okReply();
+      const english: Languages = { lineLanguage: async () => "en", defaultLocale: "id" };
+      await handleEvents([textEvent("/config", "rt-1", USER_U1)], reply, sessions, echoAi(), settings, english);
+      const extras = reply.mock.calls[0]![4] as { flex: string; quickReplies: { label: string; text: string }[] };
+      expect(extras.flex).toBe("card");
+      expect(extras.quickReplies.map((option) => option.text)).toContain("/config translate ja");
+      expect(extras.quickReplies.at(-1)).toEqual({ label: MESSAGES.en.resetLabel, text: "/config translate reset" });
+    });
+
+    test("/config with arguments (a change) stays a plain text", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent("/config translate ja", "rt-1", USER_U1)], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", "translate diubah ke ja.", "q");
+    });
+
+    // An empty list is a one-line text: replyMessages turns it back into plain text (see split.test.ts).
+    test("/groups in a 1:1 chat asks for a card, in a group it is the unknown command", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent("/groups", "rt-1", USER_U1)], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", expect.stringContaining("#"), "q", undefined, { flex: "card" });
+      await handleEvents([textEvent("/groups", "rt-2", GROUP_U2)], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-2", expect.stringContaining("tidak dikenal"), "q");
+    });
+
+    test("a long AI answer in a 1:1 chat is a card, a short one is plain text", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent("a".repeat(700), "rt-1", USER_U1), textEvent("pendek", "rt-2", USER_U1)], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", `re: ${"a".repeat(700)}`, "q", undefined, { flex: "answer" });
+      expect(reply).toHaveBeenCalledWith("rt-2", "re: pendek", "q");
+    });
+
+    test("a long AI answer in a group stays quoted text", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent(`@Elysia ${"a".repeat(700)}`, "rt-1", GROUP_U2, BOT_MENTION)], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", `re: ${"a".repeat(700)}`, "q");
+    });
   });
 
   describe("loading animation", () => {

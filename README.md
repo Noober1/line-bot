@@ -132,8 +132,13 @@ AI_BASE_URL=http://localhost:20128/v1     # optional; https://, or http:// only 
 AI_API_KEY=                               # optional: only if 9router has REQUIRE_API_KEY=true
 ```
 
-- If the AI fails (9router down, timeout after 40 s, error status, empty answer), the bot
-  sends **no reply**, logs `Failed to handle event: ...`, and saves nothing.
+- If the AI fails (9router down, error status, empty answer) or times out (40 s), the bot replies with a
+  short apology in the sender's language (a different one for a timeout), logs `ai chat failed` with the
+  error, and saves nothing. Only auto-translate stays silent on an AI failure (it is not a request to the bot).
+- In a 1:1 chat the bot shows LINE's loading animation (40 s, ends with the bot's next message) while the AI
+  works on a chat message or `/translate`. Groups have none: LINE only offers it in 1:1 chats. It shows only
+  while the user is looking at the chat, and a failed request for it is logged (`loading animation failed`)
+  and ignored.
 - Long answers are split into up to 5 messages of at most 5000 characters (LINE's limits), at a paragraph, line or sentence break when possible.
 - Every reply to a text message quotes that message (LINE quote); a split answer quotes it in the first part only. The join notice is not a quote.
 - Chat text is sent to whatever provider your 9router model or combo uses. Choose accordingly.

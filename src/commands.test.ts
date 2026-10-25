@@ -87,7 +87,7 @@ describe("runCommand", () => {
 
   test("/reset clears the history and confirms", () => {
     const resetHistory = mock(() => {});
-    expect(runCommand({ name: "reset", args: "" }, { ...noopContext, resetHistory })).toBe("Riwayat chat sudah dihapus.");
+    expect(runCommand({ name: "reset", args: "" }, { ...noopContext, resetHistory })).toBe("✅ Riwayat obrolan di sini sudah dihapus. Percakapan dimulai dari awal.");
     expect(resetHistory).toHaveBeenCalledTimes(1);
   });
 

@@ -8,6 +8,9 @@ export type Messages = {
   readonly commandsTitle: string;
   readonly commandDescriptions: Readonly<Record<CommandName, string>>;
   readonly historyCleared: string;
+  // The AI could not answer a chat message or /elysia: it failed, or it ran into AI_TIMEOUT_MS.
+  readonly aiFailed: string;
+  readonly aiTimeout: string;
   readonly unknownCommand: (name: string) => string;
   readonly translateUsage: (language: string) => string;
   readonly translateTooLong: (max: number) => string;
@@ -71,7 +74,9 @@ const id: Messages = {
     config: "lihat atau ubah pengaturan kamu",
     elysia: "tanya AI (di grup: pengganti mention bot)",
   },
-  historyCleared: "Riwayat chat sudah dihapus.",
+  historyCleared: "✅ Riwayat obrolan di sini sudah dihapus. Percakapan dimulai dari awal.",
+  aiFailed: "Maaf, AI lagi bermasalah dan belum bisa menjawab. Coba kirim lagi sebentar lagi ya.",
+  aiTimeout: "Maaf, AI butuh waktu terlalu lama untuk menjawab. Coba lagi, atau pakai pesan yang lebih pendek.",
   unknownCommand: (name) => `Perintah /${name} tidak dikenal. Ketik /help untuk daftar perintah.`,
   translateUsage: (language) =>
     `Pakai: /translate <teks>. Bahasa tujuan kamu: ${language}. Ubah: /config translate <kode>.`,
@@ -125,7 +130,9 @@ const en: Messages = {
     config: "view or change your settings",
     elysia: "ask the AI (in a group: instead of mentioning the bot)",
   },
-  historyCleared: "Chat history cleared.",
+  historyCleared: "✅ The chat history here is cleared. We're starting fresh.",
+  aiFailed: "Sorry, the AI is having trouble and can't answer right now. Please try again in a moment.",
+  aiTimeout: "Sorry, the AI took too long to answer. Please try again, or use a shorter message.",
   unknownCommand: (name) => `Unknown command /${name}. Type /help for the list of commands.`,
   translateUsage: (language) =>
     `Usage: /translate <text>. Your target language: ${language}. Change it: /config translate <code>.`,
@@ -179,7 +186,9 @@ const ja: Messages = {
     config: "自分の設定を表示・変更",
     elysia: "AI に質問（グループではボットへのメンションの代わり）",
   },
-  historyCleared: "チャット履歴を削除しました。",
+  historyCleared: "✅ このチャットの履歴を削除しました。最初から始めます。",
+  aiFailed: "申し訳ありません。AIに問題が発生していて、今は回答できません。しばらくしてからもう一度お試しください。",
+  aiTimeout: "申し訳ありません。AIの回答に時間がかかりすぎました。もう一度お試しいただくか、短いメッセージでお試しください。",
   unknownCommand: (name) => `/${name} は不明なコマンドです。/help でコマンド一覧を表示できます。`,
   translateUsage: (language) =>
     `使い方: /translate <テキスト>。翻訳先の言語: ${language}。変更: /config translate <コード>。`,
@@ -233,7 +242,9 @@ const zhHans: Messages = {
     config: "查看或更改你的设置",
     elysia: "向 AI 提问（群组中可代替 @机器人）",
   },
-  historyCleared: "聊天记录已清除。",
+  historyCleared: "✅ 此处的聊天记录已清除，我们从头开始。",
+  aiFailed: "抱歉，AI 暂时出了问题，现在无法回答。请稍后再试。",
+  aiTimeout: "抱歉，AI 回答用时过长。请重试，或发送更短的消息。",
   unknownCommand: (name) => `未知指令 /${name}。输入 /help 查看指令列表。`,
   translateUsage: (language) => `用法：/translate <文字>。你的目标语言：${language}。更改：/config translate <代码>。`,
   translateTooLong: (max) => `文字太长（最多 ${max} 个字符）。`,
@@ -286,7 +297,9 @@ const zhHant: Messages = {
     config: "查看或變更你的設定",
     elysia: "向 AI 提問（群組中可代替 @機器人）",
   },
-  historyCleared: "聊天記錄已清除。",
+  historyCleared: "✅ 此處的聊天記錄已清除，我們從頭開始。",
+  aiFailed: "抱歉，AI 暫時出了問題，現在無法回答。請稍後再試。",
+  aiTimeout: "抱歉，AI 回答時間過長。請重試，或傳送較短的訊息。",
   unknownCommand: (name) => `未知指令 /${name}。輸入 /help 查看指令列表。`,
   translateUsage: (language) => `用法：/translate <文字>。你的目標語言：${language}。變更：/config translate <代碼>。`,
   translateTooLong: (max) => `文字太長（最多 ${max} 個字元）。`,

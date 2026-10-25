@@ -28,3 +28,13 @@
 6. Matikan 9router lalu kirim pesan: `ai failed` (warn) + `event failed` (error + stack), bot tidak crash, tidak ada secret di baris error.
 7. `LOG_LEVEL=verbose` di `.env`: bot berhenti saat startup dengan `Invalid LOG_LEVEL`.
 8. Di `journalctl`/terminal non-TTY (`bun run start | cat`): tidak ada kode warna ANSI.
+
+## 16. Pengalaman membalas
+1. DM ke bot, kirim pertanyaan yang butuh beberapa detik: animasi loading (tiga titik) muncul selama AI berpikir lalu hilang saat balasan datang. Cek di mobile dan desktop; animasi hanya muncul bila chat sedang dibuka.
+2. `/translate halo` di DM: animasi loading muncul. `/ping` dan `/help`: tidak ada animasi.
+3. Mention bot di grup: tidak ada animasi (memang tidak didukung LINE), jawaban tetap datang.
+4. Matikan 9router, kirim pesan di DM: dibalas "Maaf, AI lagi bermasalah..." (bukan diam). Cek juga di grup lewat mention dan `/elysia`.
+5. Bikin timeout (mis. tahan 9router >40 detik): dibalas teks timeout yang berbeda ("butuh waktu terlalu lama").
+6. Ganti bahasa LINE ke Inggris/Jepang/China: teks gagal/timeout mengikuti bahasa pengirim.
+7. Auto-translate on lalu matikan 9router, kirim pesan: tetap diam (tidak ada balasan error), hanya tercatat di log.
+8. `/reset` di DM dan di grup: konfirmasi "✅ Riwayat obrolan di sini sudah dihapus..." muncul; pesan berikutnya tidak lagi mengingat percakapan lama.

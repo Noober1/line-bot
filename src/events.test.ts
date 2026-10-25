@@ -170,11 +170,18 @@ describe("handleEvents", () => {
       return textEvent(text, "rt-g", { type: "group", groupId: "C1", userId: "U2" } as webhook.Source);
     }
 
-    test("a failing AI is logged as a warning and the event as an error, without throwing", async () => {
+    test("a failing AI is logged as a warning and the chat as an error, without throwing", async () => {
       await handleEvents([textEvent("halo", "rt-1")], okReply(), sessions, failingAi(), settings);
       expect(out.lines.some((line) => line.includes("WARN") && line.includes("ai failed") && line.includes("err="))).toBe(true);
-      expect(out.lines.some((line) => line.includes("ERROR") && line.includes("event failed"))).toBe(true);
+      expect(out.lines.some((line) => line.includes("ERROR") && line.includes("ai chat failed"))).toBe(true);
       expect(out.lines.at(-1)).toContain("done");
+    });
+
+    test("an error thrown outside the AI call is logged as event failed", async () => {
+      const broken = { ...access, groups: { ...access.groups, request: () => { throw new Error("db gone"); } } } as Access;
+      const group = { type: "group", groupId: "C5", userId: "U2" } as webhook.Source;
+      await handle([textEvent("/ping", "rt-1", group)], okReply(), sessions, echoAi(), settings, ID_LANGUAGES, () => "allow", broken, autoTranslate);
+      expect(out.lines.some((line) => line.includes("ERROR") && line.includes("event failed") && line.includes("db gone"))).toBe(true);
     });
 
     test("a failing reply is logged and does not stop the other events", async () => {
@@ -315,7 +322,7 @@ describe("handleEvents", () => {
     sessions.append("U2", "user", "punya U2");
     const reply = okReply();
     await handleEvents([textEvent("/reset", "rt-1", USER_U1)], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "Riwayat chat sudah dihapus.", "q");
+    expect(reply).toHaveBeenCalledWith("rt-1", "✅ Riwayat obrolan di sini sudah dihapus. Percakapan dimulai dari awal.", "q");
     expect(sessions.recent("U1", 10)).toEqual([]);
     expect(sessions.recent("U2", 10)).toEqual([{ role: "user", content: "punya U2" }]);
   });
@@ -403,7 +410,7 @@ describe("handleEvents", () => {
     expect(ai).not.toHaveBeenCalled();
   });
 
-  test("an AI failure is logged, sends no reply, saves nothing, and does not stop other events", async () => {
+  test("an AI failure is logged, tells the user, saves nothing, and does not stop other events", async () => {
     const reply = okReply();
     const ai = mock(async (messages: readonly StoredMessage[]) => {
       if (messages.at(-1)?.content === "rusak") throw new Error("ai down");
@@ -419,10 +426,78 @@ describe("handleEvents", () => {
       ai,
       settings,
     );
-    expect(reply).toHaveBeenCalledTimes(1);
+    expect(reply).toHaveBeenCalledTimes(2);
+    expect(reply).toHaveBeenCalledWith("rt-bad", MESSAGES.id.aiFailed, "q");
     expect(reply).toHaveBeenCalledWith("rt-ok", "oke", "q");
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(sessions.recent("U1", 10)).toEqual([]);
+  });
+
+  test("an AI timeout gets its own friendly text, in the sender's language", async () => {
+    const reply = okReply();
+    const timeout = mock(async (): Promise<string> => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
+    const english: Languages = { lineLanguage: async () => "en", defaultLocale: "id" };
+    await handleEvents([textEvent("halo", "rt-1", USER_U1)], reply, sessions, timeout, settings, english);
+    expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.en.aiTimeout, "q");
+  });
+
+  test("a group mention that hits an AI failure is answered with the friendly text too", async () => {
+    const reply = okReply();
+    await handleEvents(
+      [textEvent("@Elysia halo", "rt-1", { type: "group", groupId: "C1", userId: "U2" }, BOT_MENTION)],
+      reply,
+      sessions,
+      failingAi(),
+      settings,
+    );
+    expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.aiFailed, "q");
+  });
+
+  describe("loading animation", () => {
+    const loading = () => mock(async (_userId: string) => {});
+    const run = (events: webhook.Event[], showLoading: Parameters<typeof handle>[9], ai = echoAi()) =>
+      handle(events, okReply(), sessions, ai, settings, ID_LANGUAGES, () => "allow", access, autoTranslate, showLoading);
+
+    test("starts for an AI chat in a 1:1 chat, before the answer", async () => {
+      const showLoading = loading();
+      await run([textEvent("halo", "rt-1", USER_U1)], showLoading);
+      expect(showLoading).toHaveBeenCalledTimes(1);
+      expect(showLoading).toHaveBeenCalledWith("U1");
+    });
+
+    test("starts for /translate in a 1:1 chat, but not for a command that needs no AI", async () => {
+      const showLoading = loading();
+      await run([textEvent("/ping", "rt-1", USER_U1)], showLoading);
+      expect(showLoading).not.toHaveBeenCalled();
+      await run([textEvent("/translate halo", "rt-2", USER_U1)], showLoading);
+      expect(showLoading).toHaveBeenCalledTimes(1);
+    });
+
+    test("never starts in a group, where LINE has no loading animation", async () => {
+      const showLoading = loading();
+      await run([textEvent("@Elysia halo", "rt-1", { type: "group", groupId: "C1", userId: "U2" }, BOT_MENTION)], showLoading);
+      expect(showLoading).not.toHaveBeenCalled();
+    });
+
+    test("a failing animation is logged and does not cost the user the answer", async () => {
+      const out = captureLog("info");
+      const reply = okReply();
+      const failing = mock(async (_userId: string) => {
+        throw new Error("LINE said no");
+      });
+      await handle([textEvent("halo", "rt-1", USER_U1)], reply, sessions, echoAi(), settings, ID_LANGUAGES, () => "allow", access, autoTranslate, failing);
+      out.restore();
+      expect(reply).toHaveBeenCalledWith("rt-1", "re: halo", "q");
+      expect(out.lines.some((line) => line.includes("loading animation failed") && line.includes("LINE said no"))).toBe(true);
+    });
+
+    test("without a showLoading function nothing happens", async () => {
+      const reply = okReply();
+      await run([textEvent("halo", "rt-1", USER_U1)], undefined);
+      expect(reply).not.toHaveBeenCalled();
+    });
   });
 
   test("never rejects when the AI fails", async () => {
@@ -522,7 +597,7 @@ describe("handleEvents", () => {
       defaultLocale: "id",
     });
     expect(lineLanguage).toHaveBeenCalledWith("U1");
-    expect(reply).toHaveBeenCalledWith("rt-1", "チャット履歴を削除しました。", "q");
+    expect(reply).toHaveBeenCalledWith("rt-1", "✅ このチャットの履歴を削除しました。最初から始めます。", "q");
   });
 
   test("a group command uses the sender's LINE language", async () => {
@@ -534,7 +609,7 @@ describe("handleEvents", () => {
       defaultLocale: "id",
     });
     expect(lineLanguage).toHaveBeenCalledWith("U1");
-    expect(reply).toHaveBeenCalledWith("rt-1", "聊天記錄已清除。", "q");
+    expect(reply).toHaveBeenCalledWith("rt-1", "✅ 此處的聊天記錄已清除，我們從頭開始。", "q");
   });
 
   test("an unknown or unsupported LINE language falls back to the default locale", async () => {
@@ -544,7 +619,7 @@ describe("handleEvents", () => {
         lineLanguage: async () => language,
         defaultLocale: "en",
       });
-      expect(reply).toHaveBeenCalledWith("rt-1", "Chat history cleared.", "q");
+      expect(reply).toHaveBeenCalledWith("rt-1", "✅ The chat history here is cleared. We're starting fresh.", "q");
     }
   });
 
@@ -566,7 +641,7 @@ describe("handleEvents", () => {
       defaultLocale: "en",
     });
     expect(lineLanguage).not.toHaveBeenCalled();
-    expect(reply).toHaveBeenCalledWith("rt-1", "Chat history cleared.", "q");
+    expect(reply).toHaveBeenCalledWith("rt-1", "✅ The chat history here is cleared. We're starting fresh.", "q");
   });
 
   test("AI chat does not fetch the LINE language", async () => {

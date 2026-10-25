@@ -18,6 +18,9 @@ const log = logger("events");
 // `mentions` (placeholder -> user ID, see mentions.ts) makes the reply a text v2 message that mentions those users.
 export type Reply = (replyToken: string, text: string, quoteToken?: string, mentions?: Mentions) => Promise<void>;
 
+// Shows LINE's loading animation in a 1:1 chat (a group has none) until the bot's next message or a timeout.
+export type ShowLoading = (userId: string) => Promise<void>;
+
 export type Languages = {
   readonly lineLanguage: LineLanguage;
   // Reply language when the sender's LINE language is unknown or not supported (DEFAULT_REPLY_LANG).
@@ -57,6 +60,7 @@ export async function handleEvents(
   rateLimit: RateLimit,
   access: Access,
   autoTranslate: AutoTranslateStore,
+  showLoading?: ShowLoading,
 ): Promise<void> {
   await Promise.all(
     events.map((event) =>
@@ -64,7 +68,7 @@ export async function handleEvents(
         const started = Date.now();
         log.info("event", { type: event.type, source: describeSource(event.source), kind: messageKind(event) });
         try {
-          await handleEvent(event, timedReply(reply), sessions, timedAi(ai), settings, languages, rateLimit, access, autoTranslate);
+          await handleEvent(event, timedReply(reply), sessions, timedAi(ai), settings, languages, rateLimit, access, autoTranslate, showLoading);
         } catch (error) {
           log.error("event failed", { err: error });
         } finally {
@@ -124,6 +128,7 @@ async function handleEvent(
   rateLimit: RateLimit,
   access: Access,
   autoTranslate: AutoTranslateStore,
+  showLoading?: ShowLoading,
 ): Promise<void> {
   const { source } = event;
   const userId = source?.userId;
@@ -157,6 +162,12 @@ async function handleEvent(
   const key = sourceKey(source);
   const command = parseCommand(text);
   const inGroup = groupId !== undefined;
+  // Not awaited: the animation must not delay the AI call, and a failure must not cost the user their answer.
+  const startLoading = () => {
+    if (showLoading && !inGroup && userId) {
+      showLoading(userId).catch((error: unknown) => log.warn("loading animation failed", { err: error }));
+    }
+  };
   // In a group a plain message is for the bot only when it mentions the bot, or comes from a sender with
   // /auto-translate on; the rest is members talking. Ignored here, above the access gate and the rate limit.
   const mentionPrompt = inGroup && !command ? withoutBotMention(event.message) : null;
@@ -241,6 +252,7 @@ async function handleEvent(
     }
     const context = { resetHistory, settings: userSettings, defaults, ai, locale };
     if (command.name === TRANSLATE_COMMAND) {
+      startLoading();
       const answer = await runCommand(parseCommand(shielded.text) ?? command, context);
       const restored = restoreMentions(answer, shielded, MAX_TEXT_LENGTH);
       await respond(restored.text, restored.mentions);
@@ -254,10 +266,19 @@ async function handleEvent(
     await respond(MESSAGES[(await senderLanguage(userId, languages)).locale].elysiaUsage);
     return;
   }
-  // An AI failure throws and is logged by handleEvents: the user gets no reply and nothing is saved.
   const past = history(sessions, key);
   log.info("ai chat", { history: past.length, chars: prompt.length, via: command ? "/elysia" : mentionPrompt === null ? "dm" : "mention" });
-  const answer = await ai([...past, { role: "user", content: prompt }]);
+  startLoading();
+  let answer: string;
+  try {
+    answer = await ai([...past, { role: "user", content: prompt }]);
+  } catch (error) {
+    // The user is told, and nothing is saved: the history holds only what was answered.
+    log.error("ai chat failed", { err: error });
+    const t = MESSAGES[(await senderLanguage(userId, languages)).locale];
+    await respond(isTimeout(error) ? t.aiTimeout : t.aiFailed);
+    return;
+  }
   await respond(answer);
   // Saved only after a successful reply, so the history holds what the user actually saw.
   if (key) {
@@ -310,6 +331,11 @@ async function autoTranslateText(
   autoTranslate.remember(groupId, userId, plainText(body, shielded));
   const restored = restoreMentions(answer, shielded, MAX_TEXT_LENGTH);
   await respond(restored.text, restored.mentions);
+}
+
+// createAi stops a request with AbortSignal.timeout, which rejects with a TimeoutError.
+function isTimeout(error: unknown): boolean {
+  return error instanceof Error && error.name === "TimeoutError";
 }
 
 async function senderLanguage(userId: string | undefined, languages: Languages) {

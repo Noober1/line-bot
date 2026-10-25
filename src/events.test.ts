@@ -878,6 +878,34 @@ describe("handleEvents", () => {
         expect(ai).toHaveBeenCalledWith([{ role: "user", content: "selamat pagi" }], autoTranslatePrompt("en", "sopan, ke atasan"));
       });
 
+      test("a mention of another user goes to the AI as a placeholder and is mentioned again in the reply", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const ai = echoAi();
+        const mention: webhook.Mention = { mentionees: [{ type: "user", index: 0, length: 4, userId: "Uann" }] };
+        await handleEvents([textEvent("@Ann halo", "rt-1", inGroup("C1", "U5"), mention)], reply, sessions, ai, settings);
+        expect(ai.mock.calls[0]![0]).toEqual([{ role: "user", content: "{u1} halo" }]);
+        expect(reply).toHaveBeenCalledWith("rt-1", "re: {u1} halo", "q", { u1: "Uann" });
+      });
+
+      test("a placeholder the AI changed falls back to plain text with the typed name", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const ai = mock(async (_m: readonly StoredMessage[], _s?: string) => "hello {oops}, {u1}");
+        const mention: webhook.Mention = { mentionees: [{ type: "user", index: 0, length: 4, userId: "Uann" }] };
+        await handleEvents([textEvent("@Ann halo", "rt-1", inGroup("C1", "U5"), mention)], reply, sessions, ai, settings);
+        expect(reply).toHaveBeenCalledWith("rt-1", "hello {oops}, @Ann", "q");
+      });
+
+      test("/translate protects mentions the same way", async () => {
+        const reply = okReply();
+        const ai = echoAi();
+        const mention: webhook.Mention = { mentionees: [{ type: "user", index: 11, length: 4, userId: "Uann" }] };
+        await handleEvents([textEvent("/translate @Ann halo", "rt-1", inGroup("C1", "U5"), mention)], reply, sessions, ai, settings);
+        expect(ai.mock.calls[0]![0]).toEqual([{ role: "user", content: "{u1} halo" }]);
+        expect(reply).toHaveBeenCalledWith("rt-1", "re: {u1} halo", "q", { u1: "Uann" });
+      });
+
       test("other members, and the same user in another group, are not translated", async () => {
         autoTranslate.toggle("C1", "U5");
         const reply = okReply();

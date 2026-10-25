@@ -4,12 +4,15 @@ import type { Ai } from "./ai";
 import type { AutoTranslateStore } from "./auto-translate";
 import { autoTranslatePrompt, MAX_TRANSLATE_CHARS, parseCommand, parseInstruction, runCommand } from "./commands";
 import { localeFromLine, type LineLanguage, type Locale } from "./language";
+import { protectMentions, restoreMentions, type Mentions, type ShieldedText } from "./mentions";
 import { MESSAGES, type CommandName } from "./messages";
 import type { RateLimit } from "./ratelimit";
 import { sourceKey, type SessionStore, type StoredMessage } from "./session";
 import { resolveSettings, settingsFor, type SettingsStore } from "./settings";
+import { MAX_TEXT_LENGTH } from "./split";
 
-export type Reply = (replyToken: string, text: string, quoteToken?: string) => Promise<void>;
+// `mentions` (placeholder -> user ID, see mentions.ts) makes the reply a text v2 message that mentions those users.
+export type Reply = (replyToken: string, text: string, quoteToken?: string, mentions?: Mentions) => Promise<void>;
 
 export type Languages = {
   readonly lineLanguage: LineLanguage;
@@ -28,6 +31,7 @@ const CONFIG_COMMAND: CommandName = "config";
 
 // Toggled in a group only; elsewhere the router answers autoTranslateGroupOnly.
 const AUTO_TRANSLATE_COMMAND: CommandName = "auto-translate";
+const TRANSLATE_COMMAND: CommandName = "translate";
 
 // A pending group gets the "not permitted" notice at most this often.
 export const NOT_PERMITTED_NOTICE_MS = 10 * 60 * 1000;
@@ -95,7 +99,10 @@ async function handleEvent(
   const replyToken = event.replyToken;
   const quoteToken = event.message.quoteToken;
   // Every answer to a text message quotes it; join (onJoin) has no message to quote.
-  const respond = (replyText: string) => reply(replyToken, replyText, quoteToken);
+  const respond = (replyText: string, mentions?: Mentions) =>
+    mentions ? reply(replyToken, replyText, quoteToken, mentions) : reply(replyToken, replyText, quoteToken);
+  // For /translate and auto-translate: mentions of other users travel through the AI as placeholders.
+  const shielded = protectMentions(event.message);
   const key = sourceKey(source);
   const command = parseCommand(text);
   const inGroup = groupId !== undefined;
@@ -136,7 +143,7 @@ async function handleEvent(
     return;
   }
   if (autoTranslating && groupId && userId) {
-    await autoTranslateText(text, groupId, userId, respond, ai, settings, languages, access);
+    await autoTranslateText(shielded, groupId, userId, respond, ai, settings, languages, access);
     return;
   }
   if (!inGroup && !owner && !(command && DM_COMMANDS.has(command.name))) {
@@ -174,6 +181,12 @@ async function handleEvent(
       return;
     }
     const context = { resetHistory, settings: userSettings, defaults, ai, locale };
+    if (command.name === TRANSLATE_COMMAND) {
+      const answer = await runCommand(parseCommand(shielded.text) ?? command, context);
+      const restored = restoreMentions(answer, shielded, MAX_TEXT_LENGTH);
+      await respond(restored.text, restored.mentions);
+      return;
+    }
     await respond(await runCommand(command, context));
     return;
   }
@@ -207,15 +220,16 @@ async function onJoin(groupId: string, replyToken: string, reply: Reply, access:
 // Only the text and the translate prompt go to the AI, and nothing is saved. An AI failure throws:
 // handleEvents logs it and the sender gets no reply.
 async function autoTranslateText(
-  text: string,
+  shielded: ShieldedText,
   groupId: string,
   userId: string,
-  respond: (text: string) => Promise<void>,
+  respond: (text: string, mentions?: Mentions) => Promise<void>,
   ai: Ai,
   settings: SettingsStore,
   languages: Languages,
   access: Access,
 ): Promise<void> {
+  const { text } = shielded;
   // The AI answer is capped (MAX_ANSWER_TOKENS): a longer text could come back cut off.
   if (text.length > MAX_TRANSLATE_CHARS) {
     console.log(`Skipped auto-translate of a long message in ${groupId}`);
@@ -230,7 +244,8 @@ async function autoTranslateText(
     console.log(`Auto-translate skipped in ${groupId}: the AI answered NOOP`);
     return;
   }
-  await respond(answer);
+  const restored = restoreMentions(answer, shielded, MAX_TEXT_LENGTH);
+  await respond(restored.text, restored.mentions);
 }
 
 async function senderLanguage(userId: string | undefined, languages: Languages) {

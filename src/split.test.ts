@@ -37,6 +37,18 @@ describe("splitReply", () => {
   });
 });
 
+describe("replyMessages with mentions", () => {
+  test("is one text v2 message with a mention substitution per user, quoting the user's message", () => {
+    expect(replyMessages("hi {u1}", "q", { u1: "Uann" })).toEqual([
+      { type: "textV2", text: "hi {u1}", quoteToken: "q", substitution: { u1: { type: "mention", mentionee: { type: "user", userId: "Uann" } } } },
+    ]);
+  });
+
+  test("without a quote token there is no quoteToken field", () => {
+    expect(replyMessages("hi {u1}", undefined, { u1: "Uann" })[0]).not.toHaveProperty("quoteToken");
+  });
+});
+
 describe("replyMessages", () => {
   test("a short answer is one text message quoting the user's message", () => {
     expect(replyMessages("halo", "q")).toEqual([{ type: "text", text: "halo", quoteToken: "q" }]);

@@ -30,8 +30,8 @@ const client = new messagingApi.MessagingApiClient({
 });
 
 // A reply token works once, so a long answer goes out as up to 5 messages in one reply.
-const reply: Reply = async (replyToken, text, quoteToken) => {
-  await client.replyMessage({ replyToken, messages: replyMessages(text, quoteToken) });
+const reply: Reply = async (replyToken, text, quoteToken, mentions) => {
+  await client.replyMessage({ replyToken, messages: replyMessages(text, quoteToken, mentions) });
 };
 
 const db = new Database(config.databasePath);

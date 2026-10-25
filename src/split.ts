@@ -1,4 +1,5 @@
 import type { messagingApi } from "@line/bot-sdk";
+import type { Mentions } from "./mentions";
 
 // LINE limits: a text message holds 5000 UTF-16 code units (= JS string length); a reply holds 5 messages.
 export const MAX_TEXT_LENGTH = 5000;
@@ -24,7 +25,14 @@ export function splitReply(text: string, max = MAX_TEXT_LENGTH, maxParts = MAX_R
 }
 
 // One quote per answer: only the first part quotes the user's message.
-export function replyMessages(text: string, quoteToken?: string): messagingApi.TextMessage[] {
+// An answer with mentions is one text v2 message: restoreMentions (mentions.ts) already kept it under the limit.
+export function replyMessages(text: string, quoteToken?: string, mentions?: Mentions): messagingApi.Message[] {
+  if (mentions) {
+    const substitution = Object.fromEntries(
+      Object.entries(mentions).map(([key, userId]) => [key, { type: "mention" as const, mentionee: { type: "user" as const, userId } }]),
+    );
+    return [{ type: "textV2", text, substitution, ...(quoteToken ? { quoteToken } : {}) }];
+  }
   return splitReply(text).map((part, i) =>
     i === 0 && quoteToken ? { type: "text", text: part, quoteToken } : { type: "text", text: part },
   );

@@ -8,7 +8,7 @@ import type { RateLimit } from "./ratelimit";
 import { sourceKey, type SessionStore, type StoredMessage } from "./session";
 import { resolveSettings, settingsFor, type SettingsStore } from "./settings";
 
-export type Reply = (replyToken: string, text: string) => Promise<void>;
+export type Reply = (replyToken: string, text: string, quoteToken?: string) => Promise<void>;
 
 export type Languages = {
   readonly lineLanguage: LineLanguage;
@@ -86,6 +86,10 @@ async function handleEvent(
     return;
   }
   const { text } = event.message;
+  const replyToken = event.replyToken;
+  const quoteToken = event.message.quoteToken;
+  // Every answer to a text message quotes it; join (onJoin) has no message to quote.
+  const respond = (replyText: string) => reply(replyToken, replyText, quoteToken);
   const key = sourceKey(source);
   const command = parseCommand(text);
   const inGroup = groupId !== undefined;
@@ -110,7 +114,7 @@ async function handleEvent(
         return;
       }
       const t = MESSAGES[(await senderLanguage(userId, languages)).locale];
-      await reply(event.replyToken, userId ? t.notPermitted(group.id) : t.unknownSender);
+      await respond(userId ? t.notPermitted(group.id) : t.unknownSender);
       return;
     }
   }
@@ -118,18 +122,18 @@ async function handleEvent(
   if (verdict !== "allow") {
     if (verdict === "notify") {
       console.log(`Rate limit reached for ${key}`);
-      await reply(event.replyToken, MESSAGES[(await senderLanguage(userId, languages)).locale].rateLimited);
+      await respond(MESSAGES[(await senderLanguage(userId, languages)).locale].rateLimited);
     }
     return;
   }
   if (!inGroup && !owner && !(command && DM_COMMANDS.has(command.name))) {
-    await reply(event.replyToken, MESSAGES[(await senderLanguage(userId, languages)).locale].dmGroupsOnly);
+    await respond(MESSAGES[(await senderLanguage(userId, languages)).locale].dmGroupsOnly);
     return;
   }
   // /groups, /approve, /deny, /admin only in a 1:1 chat; in a group they fall through to "unknown command".
   if (command && ACCESS_COMMANDS.has(command.name) && (!inGroup || command.name === GROUP_CONFIG_COMMAND)) {
     const { locale } = await senderLanguage(userId, languages);
-    await reply(event.replyToken, await runAccessCommand(command, { access, userId, groupId, locale }));
+    await respond(await runAccessCommand(command, { access, userId, groupId, locale }));
     return;
   }
   if (command && command.name !== ELYSIA_COMMAND) {
@@ -140,7 +144,7 @@ async function handleEvent(
     // The LINE language is fetched for commands only: the AI answers in the user's language by itself.
     const { lineLanguage, locale } = await senderLanguage(userId, languages);
     if (inGroup && command.name === CONFIG_COMMAND) {
-      await reply(event.replyToken, MESSAGES[locale].configInGroup);
+      await respond(MESSAGES[locale].configInGroup);
       return;
     }
     // In a group, the group's settings sit between the sender's own and their LINE language.
@@ -148,17 +152,17 @@ async function handleEvent(
     const userSettings = userId ? settingsFor(settings, userId, lineLanguage, groupStored) : null;
     const defaults = resolveSettings({}, settings.defaults, undefined, groupStored);
     const context = { resetHistory, settings: userSettings, defaults, ai, locale };
-    await reply(event.replyToken, await runCommand(command, context));
+    await respond(await runCommand(command, context));
     return;
   }
   const prompt = command ? command.args.trim() : (mentionPrompt ?? text);
   if (!prompt) {
-    await reply(event.replyToken, MESSAGES[(await senderLanguage(userId, languages)).locale].elysiaUsage);
+    await respond(MESSAGES[(await senderLanguage(userId, languages)).locale].elysiaUsage);
     return;
   }
   // An AI failure throws and is logged by handleEvents: the user gets no reply and nothing is saved.
   const answer = await ai([...history(sessions, key), { role: "user", content: prompt }]);
-  await reply(event.replyToken, answer);
+  await respond(answer);
   // Saved only after a successful reply, so the history holds what the user actually saw.
   if (key) {
     sessions.append(key, "user", prompt);

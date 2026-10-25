@@ -37,7 +37,7 @@ function textEvent(
 }
 
 function okReply() {
-  return mock(async (_replyToken: string, _text: string) => {});
+  return mock(async (_replyToken: string, _text: string, _quoteToken?: string) => {});
 }
 
 // Answers "re: <text of the newest message>", so each test can tell which message was answered.
@@ -97,15 +97,15 @@ describe("handleEvents", () => {
     const reply = okReply();
     await handleEvents([textEvent("hello", "rt-1")], reply, sessions, echoAi(), settings);
     expect(reply).toHaveBeenCalledTimes(1);
-    expect(reply).toHaveBeenCalledWith("rt-1", "re: hello");
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: hello", "q");
   });
 
   test("answers every text message in one batch", async () => {
     const reply = okReply();
     await handleEvents([textEvent("a", "rt-a"), textEvent("b", "rt-b")], reply, sessions, echoAi(), settings);
     expect(reply).toHaveBeenCalledTimes(2);
-    expect(reply).toHaveBeenCalledWith("rt-a", "re: a");
-    expect(reply).toHaveBeenCalledWith("rt-b", "re: b");
+    expect(reply).toHaveBeenCalledWith("rt-a", "re: a", "q");
+    expect(reply).toHaveBeenCalledWith("rt-b", "re: b", "q");
   });
 
   test("replies to a command without calling the AI", async () => {
@@ -113,7 +113,7 @@ describe("handleEvents", () => {
     const ai = echoAi();
     await handleEvents([textEvent("/ping", "rt-1")], reply, sessions, ai, settings);
     expect(reply).toHaveBeenCalledTimes(1);
-    expect(reply).toHaveBeenCalledWith("rt-1", "pong");
+    expect(reply).toHaveBeenCalledWith("rt-1", "pong", "q");
     expect(ai).not.toHaveBeenCalled();
   });
 
@@ -123,6 +123,7 @@ describe("handleEvents", () => {
     expect(reply).toHaveBeenCalledWith(
       "rt-1",
       "Perintah /foo tidak dikenal. Ketik /help untuk daftar perintah.",
+      "q",
     );
   });
 
@@ -156,12 +157,19 @@ describe("handleEvents", () => {
     expect(ai).not.toHaveBeenCalled();
   });
 
+  test("a text message without a quote token still gets an unquoted reply", async () => {
+    const reply = okReply();
+    const event = { type: "message", replyToken: "rt-1", source: USER_U1, message: { type: "text", id: "m1", text: "hello" } } as webhook.Event;
+    await handleEvents([event], reply, sessions, echoAi(), settings);
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: hello", undefined);
+  });
+
   test("a failed reply is logged and does not stop other replies", async () => {
     const reply = mock(async (replyToken: string, _text: string) => {
       if (replyToken === "rt-bad") throw new Error("boom");
     });
     await handleEvents([textEvent("x", "rt-bad"), textEvent("y", "rt-ok")], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-ok", "re: y");
+    expect(reply).toHaveBeenCalledWith("rt-ok", "re: y", "q");
     expect(errorSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -201,7 +209,7 @@ describe("handleEvents", () => {
     sessions.append("U2", "user", "punya U2");
     const reply = okReply();
     await handleEvents([textEvent("/reset", "rt-1", USER_U1)], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "Riwayat chat sudah dihapus.");
+    expect(reply).toHaveBeenCalledWith("rt-1", "Riwayat chat sudah dihapus.", "q");
     expect(sessions.recent("U1", 10)).toEqual([]);
     expect(sessions.recent("U2", 10)).toEqual([{ role: "user", content: "punya U2" }]);
   });
@@ -306,7 +314,7 @@ describe("handleEvents", () => {
       settings,
     );
     expect(reply).toHaveBeenCalledTimes(1);
-    expect(reply).toHaveBeenCalledWith("rt-ok", "oke");
+    expect(reply).toHaveBeenCalledWith("rt-ok", "oke", "q");
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(sessions.recent("U1", 10)).toEqual([]);
   });
@@ -320,7 +328,7 @@ describe("handleEvents", () => {
   test("/config in a 1:1 chat changes the sender's settings", async () => {
     const reply = okReply();
     await handleEvents([textEvent("/config translate ja", "rt-1", USER_U1)], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "translate diubah ke ja.");
+    expect(reply).toHaveBeenCalledWith("rt-1", "translate diubah ke ja.", "q");
     expect(settings.stored("U1")).toEqual({ translate: "ja" });
   });
 
@@ -334,8 +342,8 @@ describe("handleEvents", () => {
       [textEvent("/config translate ko", "rt-1", GROUP_C1), textEvent("/config", "rt-2", GROUP_C1)],
       reply, sessions, ai, settings,
     );
-    expect(reply).toHaveBeenCalledWith("rt-1", CONFIG_IN_GROUP_ID);
-    expect(reply).toHaveBeenCalledWith("rt-2", CONFIG_IN_GROUP_ID);
+    expect(reply).toHaveBeenCalledWith("rt-1", CONFIG_IN_GROUP_ID, "q");
+    expect(reply).toHaveBeenCalledWith("rt-2", CONFIG_IN_GROUP_ID, "q");
     expect(settings.stored("U1")).toEqual({ translate: "ja" });
     expect(settings.stored("C1")).toEqual({});
     expect(ai).not.toHaveBeenCalled();
@@ -345,7 +353,7 @@ describe("handleEvents", () => {
     const reply = okReply();
     const noId = { type: "group", groupId: "C1" } as webhook.Source;
     await handleEvents([textEvent("/config translate ja", "rt-2", noId)], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-2", CONFIG_IN_GROUP_ID);
+    expect(reply).toHaveBeenCalledWith("rt-2", CONFIG_IN_GROUP_ID, "q");
     expect(settings.stored("U1")).toEqual({});
   });
 
@@ -355,7 +363,7 @@ describe("handleEvents", () => {
       lineLanguage: async () => "ja",
       defaultLocale: "id",
     });
-    expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.ja.configInGroup);
+    expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.ja.configInGroup, "q");
   });
 
   test("/config in a 1:1 chat still lists settings", async () => {
@@ -371,7 +379,7 @@ describe("handleEvents", () => {
     const reply = okReply();
     const ai = echoAi();
     await handleEvents([textEvent("/translate halo", "rt-1", USER_U1)], reply, sessions, ai, settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "re: halo");
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: halo", "q");
     expect(ai).toHaveBeenCalledWith([{ role: "user", content: "halo" }], translatePrompt("en"));
     expect(sessions.recent("U1", 10)).toEqual([
       { role: "user", content: "lama" },
@@ -397,7 +405,7 @@ describe("handleEvents", () => {
   test("/translate still replies when the AI fails", async () => {
     const reply = okReply();
     await handleEvents([textEvent("/translate halo", "rt-1", USER_U1)], reply, sessions, failingAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "Gagal menerjemahkan. Coba lagi nanti.");
+    expect(reply).toHaveBeenCalledWith("rt-1", "Gagal menerjemahkan. Coba lagi nanti.", "q");
   });
 
   test("a command is answered in the sender's LINE language", async () => {
@@ -408,7 +416,7 @@ describe("handleEvents", () => {
       defaultLocale: "id",
     });
     expect(lineLanguage).toHaveBeenCalledWith("U1");
-    expect(reply).toHaveBeenCalledWith("rt-1", "チャット履歴を削除しました。");
+    expect(reply).toHaveBeenCalledWith("rt-1", "チャット履歴を削除しました。", "q");
   });
 
   test("a group command uses the sender's LINE language", async () => {
@@ -420,7 +428,7 @@ describe("handleEvents", () => {
       defaultLocale: "id",
     });
     expect(lineLanguage).toHaveBeenCalledWith("U1");
-    expect(reply).toHaveBeenCalledWith("rt-1", "聊天記錄已清除。");
+    expect(reply).toHaveBeenCalledWith("rt-1", "聊天記錄已清除。", "q");
   });
 
   test("an unknown or unsupported LINE language falls back to the default locale", async () => {
@@ -430,7 +438,7 @@ describe("handleEvents", () => {
         lineLanguage: async () => language,
         defaultLocale: "en",
       });
-      expect(reply).toHaveBeenCalledWith("rt-1", "Chat history cleared.");
+      expect(reply).toHaveBeenCalledWith("rt-1", "Chat history cleared.", "q");
     }
   });
 
@@ -452,7 +460,7 @@ describe("handleEvents", () => {
       defaultLocale: "en",
     });
     expect(lineLanguage).not.toHaveBeenCalled();
-    expect(reply).toHaveBeenCalledWith("rt-1", "Chat history cleared.");
+    expect(reply).toHaveBeenCalledWith("rt-1", "Chat history cleared.", "q");
   });
 
   test("AI chat does not fetch the LINE language", async () => {
@@ -469,7 +477,7 @@ describe("handleEvents", () => {
     const ai = echoAi();
     const rateLimit = mock((_key: string) => "notify" as const);
     await handleEvents([textEvent("halo", "rt-1", USER_U1)], reply, sessions, ai, settings, ID_LANGUAGES, rateLimit);
-    expect(reply).toHaveBeenCalledWith("rt-1", "Pesannya terlalu banyak. Tunggu sebentar lalu coba lagi.");
+    expect(reply).toHaveBeenCalledWith("rt-1", "Pesannya terlalu banyak. Tunggu sebentar lalu coba lagi.", "q");
     expect(ai).not.toHaveBeenCalled();
     expect(sessions.recent("U1", 10)).toEqual([]);
   });
@@ -500,7 +508,7 @@ describe("handleEvents", () => {
     const reply = okReply();
     await handleEvents([textEvent("halo", "rt-1", USER_U1)], reply, sessions, echoAi(), settings,
       { lineLanguage: async () => "ja", defaultLocale: "id" }, () => "notify");
-    expect(reply).toHaveBeenCalledWith("rt-1", "メッセージが多すぎます。少し待ってからもう一度お試しください。");
+    expect(reply).toHaveBeenCalledWith("rt-1", "メッセージが多すぎます。少し待ってからもう一度お試しください。", "q");
   });
 
   test("in a group a message that mentions the bot goes to the AI without the mention, and is saved so", async () => {
@@ -508,7 +516,7 @@ describe("handleEvents", () => {
     const ai = echoAi();
     await handleEvents([textEvent("@Elysia apa kabar?", "rt-1", GROUP_C1, BOT_MENTION)], reply, sessions, ai, settings);
     expect(ai).toHaveBeenCalledWith([{ role: "user", content: "apa kabar?" }]);
-    expect(reply).toHaveBeenCalledWith("rt-1", "re: apa kabar?");
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: apa kabar?", "q");
     expect(sessions.recent("C1", 10)).toEqual([
       { role: "user", content: "apa kabar?" },
       { role: "assistant", content: "re: apa kabar?" },
@@ -571,7 +579,7 @@ describe("handleEvents", () => {
       { role: "assistant", content: "jawaban lama" },
       { role: "user", content: "apa kabar?" },
     ]);
-    expect(reply).toHaveBeenCalledWith("rt-1", "re: apa kabar?");
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: apa kabar?", "q");
     expect(sessions.recent("C1", 10).at(-2)).toEqual({ role: "user", content: "apa kabar?" });
   });
 
@@ -582,8 +590,8 @@ describe("handleEvents", () => {
       [textEvent("/elysia   ", "rt-1", GROUP_C1), textEvent("@Elysia ", "rt-2", GROUP_C1, BOT_MENTION)],
       reply, sessions, ai, settings,
     );
-    expect(reply).toHaveBeenCalledWith("rt-1", ELYSIA_USAGE_ID);
-    expect(reply).toHaveBeenCalledWith("rt-2", ELYSIA_USAGE_ID);
+    expect(reply).toHaveBeenCalledWith("rt-1", ELYSIA_USAGE_ID, "q");
+    expect(reply).toHaveBeenCalledWith("rt-2", ELYSIA_USAGE_ID, "q");
     expect(ai).not.toHaveBeenCalled();
     expect(sessions.recent("C1", 10)).toEqual([]);
   });
@@ -592,13 +600,13 @@ describe("handleEvents", () => {
     const reply = okReply();
     await handleEvents([textEvent("/elysia", "rt-1", GROUP_C1)], reply, sessions, echoAi(), settings,
       { lineLanguage: async () => "ja", defaultLocale: "id" });
-    expect(reply).toHaveBeenCalledWith("rt-1", "使い方: /elysia <メッセージ>。グループではボットをメンションしてメッセージを書くこともできます。");
+    expect(reply).toHaveBeenCalledWith("rt-1", "使い方: /elysia <メッセージ>。グループではボットをメンションしてメッセージを書くこともできます。", "q");
   });
 
   test("other commands still work in a group without a mention, /help lists /elysia", async () => {
     const reply = okReply();
     await handleEvents([textEvent("/ping", "rt-1", GROUP_C1), textEvent("/help", "rt-2", GROUP_C1)], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "pong");
+    expect(reply).toHaveBeenCalledWith("rt-1", "pong", "q");
     expect(reply.mock.calls.find(([token]) => token === "rt-2")![1]).toContain("/elysia - ");
   });
 
@@ -630,6 +638,7 @@ describe("handleEvents", () => {
       await handleEvents([joinEvent("C5")], reply, sessions, echoAi(), settings, EN);
       expect(groups.get("C5")).toMatchObject({ status: "pending", requesterId: null });
       expect(reply).toHaveBeenCalledWith("rt-join", MESSAGES.en.joinNotice);
+      expect(reply.mock.calls[0]![2]).toBeUndefined();
     });
 
     test("join in a denied group is silent and the group stays denied", async () => {
@@ -651,12 +660,12 @@ describe("handleEvents", () => {
       const ai = echoAi();
       await handleEvents([mention("halo", "rt-1", "C5", "U2")], reply, sessions, ai, settings);
       const { id } = groups.get("C5")!;
-      expect(reply).toHaveBeenCalledWith("rt-1", T.notPermitted(id));
+      expect(reply).toHaveBeenCalledWith("rt-1", T.notPermitted(id), "q");
       expect(groups.get("C5")?.requesterId).toBe("U2");
       expect(ai).not.toHaveBeenCalled();
       clock += NOT_PERMITTED_NOTICE_MS + 1;
       await handleEvents([mention("halo", "rt-2", "C5", "U3")], reply, sessions, ai, settings);
-      expect(reply).toHaveBeenCalledWith("rt-2", T.notPermitted(id));
+      expect(reply).toHaveBeenCalledWith("rt-2", T.notPermitted(id), "q");
       expect(groups.get("C5")?.requesterId).toBe("U2");
     });
 
@@ -675,7 +684,7 @@ describe("handleEvents", () => {
     test("a member without a user ID gets unknown-sender; the next user becomes requester", async () => {
       const reply = okReply();
       await handleEvents([mention("halo", "rt-1", "C5")], reply, sessions, echoAi(), settings);
-      expect(reply).toHaveBeenCalledWith("rt-1", T.unknownSender);
+      expect(reply).toHaveBeenCalledWith("rt-1", T.unknownSender, "q");
       expect(groups.get("C5")?.requesterId).toBeNull();
       clock += NOT_PERMITTED_NOTICE_MS + 1;
       await handleEvents([mention("halo", "rt-2", "C5", "U3")], reply, sessions, echoAi(), settings);
@@ -701,20 +710,20 @@ describe("handleEvents", () => {
       expect(reply).not.toHaveBeenCalled();
       expect(rateLimit).not.toHaveBeenCalled();
       await handleEvents([mention("halo", "rt-3", "C5", "U1")], reply, sessions, ai, settings);
-      expect(reply).toHaveBeenCalledWith("rt-3", "re: halo");
+      expect(reply).toHaveBeenCalledWith("rt-3", "re: halo", "q");
     });
 
     test("any member of an allowed group is answered", async () => {
       const reply = okReply();
       await handleEvents([mention("halo", "rt-1", "C1", "U5")], reply, sessions, echoAi(), settings);
-      expect(reply).toHaveBeenCalledWith("rt-1", "re: halo");
+      expect(reply).toHaveBeenCalledWith("rt-1", "re: halo", "q");
     });
 
     test("the owner talking in a pending group allows it and becomes its admin", async () => {
       groups.request("C5", "U2");
       const reply = okReply();
       await handleEvents([mention("halo", "rt-1", "C5", "U1")], reply, sessions, echoAi(), settings);
-      expect(reply).toHaveBeenCalledWith("rt-1", "re: halo");
+      expect(reply).toHaveBeenCalledWith("rt-1", "re: halo", "q");
       expect(groups.get("C5")).toMatchObject({ status: "allowed", requesterId: "U1", adminId: "U1" });
     });
 
@@ -723,7 +732,7 @@ describe("handleEvents", () => {
       const reply = okReply();
       await handleEvents([mention("halo", "rt-2", "C5", "U2")], reply, sessions, echoAi(), settings);
       expect(groups.get("C5")).toMatchObject({ status: "allowed", requesterId: "U1", adminId: "U1" });
-      expect(reply).toHaveBeenCalledWith("rt-2", "re: halo");
+      expect(reply).toHaveBeenCalledWith("rt-2", "re: halo", "q");
     });
 
     test("the owner does not take over another admin's allowed group or a denied one", async () => {
@@ -771,6 +780,7 @@ describe("handleEvents", () => {
         await handleEvents([dm(text, "U2")], reply, sessions, ai, settings);
       }
       expect(reply.mock.calls.map(([, text]) => text)).toEqual(Array(5).fill(T.dmGroupsOnly));
+      expect(reply.mock.calls.every(([, , quote]) => quote === "q")).toBe(true);
       expect(ai).not.toHaveBeenCalled();
     });
 
@@ -780,14 +790,15 @@ describe("handleEvents", () => {
         await handleEvents([dm(text, "U2")], reply, sessions, echoAi(), settings);
       }
       expect(reply.mock.calls.map(([, text]) => text)).toEqual(["pong", T.groupsEmpty, T.settingChanged("translate", "ko")]);
+      expect(reply.mock.calls.every(([, , quote]) => quote === "q")).toBe(true);
       expect(settings.stored("U2")).toEqual({ translate: "ko" });
     });
 
     test("access commands other than /groupconfig are unknown commands in a group", async () => {
       const reply = okReply();
       await handleEvents([textEvent("/groups", "rt-1", inGroup("C1", "U7")), textEvent("/approve 1", "rt-2", inGroup("C1", "U7"))], reply, sessions, echoAi(), settings);
-      expect(reply).toHaveBeenCalledWith("rt-1", T.unknownCommand("groups"));
-      expect(reply).toHaveBeenCalledWith("rt-2", T.unknownCommand("approve"));
+      expect(reply).toHaveBeenCalledWith("rt-1", T.unknownCommand("groups"), "q");
+      expect(reply).toHaveBeenCalledWith("rt-2", T.unknownCommand("approve"), "q");
     });
 
     test("/groupconfig in a group is for the admin only", async () => {
@@ -796,8 +807,8 @@ describe("handleEvents", () => {
         [textEvent("/groupconfig translate ko", "rt-1", inGroup("C1", "U7")), textEvent("/groupconfig translate fr", "rt-2", inGroup("C1", "U5"))],
         reply, sessions, echoAi(), settings,
       );
-      expect(reply).toHaveBeenCalledWith("rt-1", T.settingChanged("translate", "ko"));
-      expect(reply).toHaveBeenCalledWith("rt-2", T.groupConfigNotAdmin);
+      expect(reply).toHaveBeenCalledWith("rt-1", T.settingChanged("translate", "ko"), "q");
+      expect(reply).toHaveBeenCalledWith("rt-2", T.groupConfigNotAdmin, "q");
       expect(access.groupSettings.stored("C1")).toEqual({ translate: "ko" });
     });
 

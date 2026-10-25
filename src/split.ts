@@ -1,3 +1,5 @@
+import type { messagingApi } from "@line/bot-sdk";
+
 // LINE limits: a text message holds 5000 UTF-16 code units (= JS string length); a reply holds 5 messages.
 export const MAX_TEXT_LENGTH = 5000;
 export const MAX_REPLY_MESSAGES = 5;
@@ -19,6 +21,13 @@ export function splitReply(text: string, max = MAX_TEXT_LENGTH, maxParts = MAX_R
     rest = rest.slice(cut).trimStart();
   }
   return rest ? [...parts, rest] : parts;
+}
+
+// One quote per answer: only the first part quotes the user's message.
+export function replyMessages(text: string, quoteToken?: string): messagingApi.TextMessage[] {
+  return splitReply(text).map((part, i) =>
+    i === 0 && quoteToken ? { type: "text", text: part, quoteToken } : { type: "text", text: part },
+  );
 }
 
 function cutAt(text: string, max: number): number {

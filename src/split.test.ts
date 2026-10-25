@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_REPLY_MESSAGES, MAX_TEXT_LENGTH, splitReply } from "./split";
+import { MAX_REPLY_MESSAGES, MAX_TEXT_LENGTH, replyMessages, splitReply } from "./split";
 
 describe("splitReply", () => {
   test("a short text is one part, unchanged", () => {
@@ -34,5 +34,22 @@ describe("splitReply", () => {
     const parts = splitReply(text, 500, 100);
     expect(parts.every((p) => p.length <= 500)).toBe(true);
     expect(parts.join(" ")).toBe(text);
+  });
+});
+
+describe("replyMessages", () => {
+  test("a short answer is one text message quoting the user's message", () => {
+    expect(replyMessages("halo", "q")).toEqual([{ type: "text", text: "halo", quoteToken: "q" }]);
+  });
+  test("a split answer quotes only in the first message", () => {
+    const messages = replyMessages("a".repeat(12_000), "q");
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toHaveProperty("quoteToken", "q");
+    expect(messages[1]).not.toHaveProperty("quoteToken");
+    expect(messages[2]).not.toHaveProperty("quoteToken");
+  });
+  test("without a quote token no message has one", () => {
+    expect(replyMessages("halo")).toEqual([{ type: "text", text: "halo" }]);
+    expect(replyMessages("halo")[0]).not.toHaveProperty("quoteToken");
   });
 });

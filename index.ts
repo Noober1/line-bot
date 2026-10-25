@@ -12,7 +12,7 @@ import { createLineLanguage } from "./src/language";
 import { createRateLimit } from "./src/ratelimit";
 import { createSessionStore } from "./src/session";
 import { createSettingsStore } from "./src/settings";
-import { splitReply } from "./src/split";
+import { replyMessages } from "./src/split";
 
 let config: Config;
 try {
@@ -29,8 +29,8 @@ const client = new messagingApi.MessagingApiClient({
 });
 
 // A reply token works once, so a long answer goes out as up to 5 messages in one reply.
-const reply: Reply = async (replyToken, text) => {
-  await client.replyMessage({ replyToken, messages: splitReply(text).map((part) => ({ type: "text", text: part })) });
+const reply: Reply = async (replyToken, text, quoteToken) => {
+  await client.replyMessage({ replyToken, messages: replyMessages(text, quoteToken) });
 };
 
 const db = new Database(config.databasePath);

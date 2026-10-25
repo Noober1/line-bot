@@ -117,6 +117,7 @@ AI_API_KEY=                               # optional: only if 9router has REQUIR
 - If the AI fails (9router down, timeout after 40 s, error status, empty answer), the bot
   sends **no reply**, logs `Failed to handle event: ...`, and saves nothing.
 - Long answers are split into up to 5 messages of at most 5000 characters (LINE's limits), at a paragraph, line or sentence break when possible.
+- Every reply to a text message quotes that message (LINE quote); a split answer quotes it in the first part only. The join notice is not a quote.
 - Chat text is sent to whatever provider your 9router model or combo uses. Choose accordingly.
 - `AI_BASE_URL` must use `https://`; plain `http://` is accepted only for `localhost`, `127.0.0.1` and `[::1]`
   (otherwise the bot stops at startup with `Invalid AI_BASE_URL`). A 9router on another machine needs HTTPS in front,

@@ -91,7 +91,7 @@ describe("createLineLanguage", () => {
 
   test("logs the raw LINE value of a fresh fetch", async () => {
     await createLineLanguage(db, answering("zh-Hant"), LINE_LANGUAGE_TTL_MS, now)("U1");
-    expect(logSpy).toHaveBeenCalledWith("LINE language of user U1: zh-Hant");
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("LINE language fetched user=U1 language=zh-Hant"));
   });
 
   test("caches per user", async () => {
@@ -128,14 +128,14 @@ describe("createLineLanguage", () => {
     expect(await lineLanguage("U1")).toBeUndefined();
     expect(await lineLanguage("U1")).toBeUndefined();
     expect(fetchLanguage).toHaveBeenCalledTimes(1);
-    expect(logSpy).toHaveBeenCalledWith("LINE language of user U1: (none)");
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("LINE language fetched user=U1 language=(none)"));
   });
 
   test("a failed fetch gives undefined, is logged, and is not cached", async () => {
     const fetchLanguage = failing();
     const lineLanguage = createLineLanguage(db, fetchLanguage, LINE_LANGUAGE_TTL_MS, now);
     expect(await lineLanguage("U1")).toBeUndefined();
-    expect(errorSpy).toHaveBeenCalledWith("Get profile failed for user U1: 404 - Not Found");
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('get profile failed user=U1 err="404 - Not Found"'));
     await lineLanguage("U1");
     expect(fetchLanguage).toHaveBeenCalledTimes(2);
   });

@@ -9,21 +9,26 @@ import { loadConfig, type Config } from "./src/config";
 import { createDedupe } from "./src/dedupe";
 import { handleEvents, type Languages, type Reply } from "./src/events";
 import { createGroupStore } from "./src/groups";
+import { configureLog, logger } from "./src/log";
 import { createLineLanguage } from "./src/language";
 import { createRateLimit } from "./src/ratelimit";
 import { createSessionStore } from "./src/session";
 import { createSettingsStore } from "./src/settings";
 import { replyMessages } from "./src/split";
 
+const log = logger("app");
+
 let config: Config;
 try {
   config = loadConfig(process.env);
 } catch (error) {
-  console.error(`Config error: ${(error as Error).message}`);
+  log.error(`config error: ${(error as Error).message}`);
   process.exit(1);
 }
 
-for (const warning of config.warnings) console.warn(warning);
+// Secrets never reach the terminal, not even inside an error message from fetch.
+configureLog({ level: config.logLevel, secrets: [config.lineChannelSecret, config.lineChannelAccessToken, config.ai.apiKey ?? ""] });
+for (const warning of config.warnings) log.warn(warning);
 
 const client = new messagingApi.MessagingApiClient({
   channelAccessToken: config.lineChannelAccessToken,
@@ -48,7 +53,6 @@ const dedupe = createDedupe(db);
 const autoTranslate = createAutoTranslateStore(db);
 const rateLimit = createRateLimit(config.rateLimitPerMinute);
 const ai = createAi(config.ai);
-console.log(`AI: model ${config.ai.model} via ${config.ai.baseUrl}`);
 const languages: Languages = {
   lineLanguage: createLineLanguage(db, async (userId) => (await client.getProfile(userId)).language),
   defaultLocale: config.defaultLocale,
@@ -61,4 +65,16 @@ const app = createApp({
 });
 
 const server = Bun.serve({ port: config.port, maxRequestBodySize: MAX_REQUEST_BODY_BYTES, fetch: app });
-console.log(`Listening on ${server.url}`);
+const aiUrl = new URL(config.ai.baseUrl);
+log.info("started", {
+  url: server.url.href,
+  port: config.port,
+  aiModel: config.ai.model,
+  aiBaseUrl: `${aiUrl.origin}${aiUrl.pathname}`,
+  appEnv: process.env.APP_ENV?.trim() || "production",
+  logLevel: config.logLevel,
+  maxGroupsPerUser: config.maxGroupsPerUser,
+  owner: config.ownerUserId ? "set" : "none",
+  rateLimitPerMinute: config.rateLimitPerMinute,
+  database: config.databasePath,
+});

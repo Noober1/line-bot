@@ -1,7 +1,10 @@
 import type { Ai } from "./ai";
 import type { Locale } from "./language";
+import { logger } from "./log";
 import { MESSAGES, type CommandName, type Messages } from "./messages";
 import { parseSettingKey, parseSettingValue, SETTINGS, type Settings, type UserSettings } from "./settings";
+
+const log = logger("commands");
 
 export type Command = { readonly name: string; readonly args: string };
 
@@ -86,7 +89,7 @@ async function translateText(args: string, context: CommandContext): Promise<str
     const { instruction, text: body } = parseInstruction(text);
     return await context.ai([{ role: "user", content: body }], translatePrompt(language, instruction));
   } catch (error) {
-    console.error("Translate failed:", error);
+    log.error("translate failed", { err: error });
     return t.translateFailed;
   }
 }

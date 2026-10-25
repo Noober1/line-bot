@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { webhook } from "@line/bot-sdk";
 import type { Access } from "./access-commands";
 import { filterDms } from "./allowlist";
@@ -8,6 +8,7 @@ import { autoTranslatePrompt, translatePrompt } from "./commands";
 import { createDedupe } from "./dedupe";
 import { AI_HISTORY_LIMIT, handleEvents as handle, NOT_PERMITTED_NOTICE_MS, type Languages } from "./events";
 import { createGroupStore, type GroupStore } from "./groups";
+import { captureLog, configureLog } from "./log";
 import type { RateLimit } from "./ratelimit";
 import { MESSAGES } from "./messages";
 import { createSessionStore, type SessionStore, type StoredMessage } from "./session";
@@ -101,6 +102,108 @@ describe("handleEvents", () => {
     await handleEvents([textEvent("hello", "rt-1")], reply, sessions, echoAi(), settings);
     expect(reply).toHaveBeenCalledTimes(1);
     expect(reply).toHaveBeenCalledWith("rt-1", "re: hello", "q");
+  });
+
+  describe("logging", () => {
+    const withId = (event: webhook.Event, id: string) => ({ ...event, webhookEventId: id }) as webhook.Event;
+    let out: ReturnType<typeof captureLog>;
+
+    beforeEach(() => {
+      out = captureLog("debug");
+    });
+    afterEach(() => {
+      out.restore();
+    });
+
+    test("one event logs event, decision, ai, reply and done in order, all with the same short event ID", async () => {
+      out.restore();
+      out = captureLog("info");
+      await handleEvents([withId(textEvent("halo", "rt-1"), "01ABCDEFGHIJKLMN")], okReply(), sessions, echoAi(), settings);
+      const messages = out.lines.map((line) => line.replace(/^\S+ \S+\s+\[\w+\] /, ""));
+      expect(messages.map((line) => line.split(" ev=")[0])).toEqual([
+        "event",
+        "ai chat",
+        "ai answered",
+        "reply sent",
+        expect.stringMatching(/^done/),
+      ]);
+      expect(out.lines.every((line) => line.includes("ev=01ABCDEF") && !line.includes("01ABCDEFG"))).toBe(true);
+    });
+
+    test("message text and the AI answer appear only at debug level, cut short", async () => {
+      const text = `rahasia ${"x".repeat(300)}`;
+      await handleEvents([textEvent(text, "rt-1")], okReply(), sessions, echoAi(), settings);
+      expect(out.lines.filter((line) => line.includes("rahasia")).every((line) => line.includes("DEBUG"))).toBe(true);
+      expect(out.lines.some((line) => line.includes("x".repeat(201)))).toBe(false);
+      out.restore();
+      out = captureLog("info");
+      await handleEvents([textEvent(text, "rt-2")], okReply(), sessions, echoAi(), settings);
+      expect(out.lines.join("\n")).not.toContain("rahasia");
+      expect(out.lines.join("\n")).toContain("chars=");
+    });
+
+    test("the reply line has the length, parts, quote and duration, never the text", async () => {
+      await handleEvents([textEvent("halo", "rt-1")], okReply(), sessions, echoAi(), settings);
+      const line = out.lines.find((l) => l.includes("reply sent"))!;
+      expect(line).toMatch(/parts=1 chars=8 quote=true mentions=0 ms=\d+/);
+      expect(line).not.toContain("re: halo");
+    });
+
+    test("every way an event is ignored says why", async () => {
+      await handleEvents([plainGroup("ngobrol biasa")], okReply(), sessions, echoAi(), settings);
+      expect(out.lines.join("\n")).toContain("ignored: plain group chat");
+      out.lines.length = 0;
+      await handleEvents([textEvent("halo", "rt-1", USER_U2)], okReply(), sessions, echoAi(), settings);
+      expect(out.lines.join("\n")).toContain("ignored: DM from a non-owner");
+      out.lines.length = 0;
+      const pendingGroup = { type: "group", groupId: "C5", userId: "U2" } as webhook.Source;
+      await handleEvents([textEvent("/ping", "rt-2", pendingGroup)], okReply(), sessions, echoAi(), settings);
+      await handleEvents([textEvent("/ping", "rt-3", pendingGroup)], okReply(), sessions, echoAi(), settings);
+      expect(out.lines.join("\n")).toContain("group not allowed: sending the notice");
+      expect(out.lines.join("\n")).toContain("ignored: group not allowed");
+      out.lines.length = 0;
+      await handleEvents([textEvent("halo", "rt-4")], okReply(), sessions, echoAi(), settings, ID_LANGUAGES, () => "notify");
+      expect(out.lines.join("\n")).toContain("rate limited: sending the notice");
+    });
+
+    function plainGroup(text: string) {
+      return textEvent(text, "rt-g", { type: "group", groupId: "C1", userId: "U2" } as webhook.Source);
+    }
+
+    test("a failing AI is logged as a warning and the event as an error, without throwing", async () => {
+      await handleEvents([textEvent("halo", "rt-1")], okReply(), sessions, failingAi(), settings);
+      expect(out.lines.some((line) => line.includes("WARN") && line.includes("ai failed") && line.includes("err="))).toBe(true);
+      expect(out.lines.some((line) => line.includes("ERROR") && line.includes("event failed"))).toBe(true);
+      expect(out.lines.at(-1)).toContain("done");
+    });
+
+    test("a failing reply is logged and does not stop the other events", async () => {
+      const reply = mock(async (token: string) => {
+        if (token === "rt-1") throw new Error("reply down");
+      });
+      await handleEvents([textEvent("a", "rt-1"), textEvent("b", "rt-2")], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledTimes(2);
+      expect(out.lines.some((line) => line.includes("reply failed") && line.includes("reply down"))).toBe(true);
+    });
+
+    test("a secret inside an error message never reaches the log", async () => {
+      configureLog({ secrets: ["sk-test-1234567890"] });
+      const leaking = mock(async (): Promise<string> => {
+        throw new Error("AI request failed: Bearer sk-test-1234567890");
+      });
+      await handleEvents([textEvent("halo", "rt-1")], okReply(), sessions, leaking, settings);
+      expect(out.lines.join("\n")).not.toContain("sk-test-1234567890");
+      expect(out.lines.join("\n")).toContain("Bearer ***");
+    });
+
+    test("IDs are shortened to 8 characters below debug level", async () => {
+      out.restore();
+      out = captureLog("info");
+      const longGroup = { type: "group", groupId: "Cabcdef0123456789", userId: "U2" } as webhook.Source;
+      await handleEvents([textEvent("/ping", "rt-1", longGroup)], okReply(), sessions, echoAi(), settings);
+      expect(out.lines.join("\n")).toContain("Cabcdef0");
+      expect(out.lines.join("\n")).not.toContain("Cabcdef01");
+    });
   });
 
   test("answers every text message in one batch", async () => {
@@ -946,7 +1049,7 @@ describe("handleEvents", () => {
         await handleEvents([plain("good morning", "rt-1", "C1", "U5")], reply, sessions, noopAi(), settings);
         expect(reply).not.toHaveBeenCalled();
         expect(sessions.recent("C1", 10)).toEqual([]);
-        expect(logSpy).toHaveBeenCalledWith("Auto-translate skipped in C1: the AI answered NOOP");
+        expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("auto-translate skipped: already in the target language (NOOP)"));
         logSpy.mockRestore();
       });
 

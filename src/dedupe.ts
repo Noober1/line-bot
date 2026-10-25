@@ -1,5 +1,8 @@
 import type { Database } from "bun:sqlite";
 import type { webhook } from "@line/bot-sdk";
+import { logger, shortId } from "./log";
+
+const log = logger("dedupe");
 
 // A redelivered event keeps its webhookEventId. LINE refuses its reply token 20 min after the event, so a day is plenty.
 export const SEEN_EVENT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -25,7 +28,7 @@ export function createDedupe(db: Database, ttlMs = SEEN_EVENT_TTL_MS, now: () =>
     return events.filter((event) => {
       if (!event.webhookEventId) return true;
       if (insert.run(event.webhookEventId, time).changes === 1) return true;
-      console.log(`Skipped duplicate event ${event.webhookEventId}`);
+      log.info("duplicate event skipped", { event: shortId(event.webhookEventId) });
       return false;
     });
   };

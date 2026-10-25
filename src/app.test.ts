@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { createApp, MAX_REQUEST_BODY_BYTES } from "./app";
+import { captureLog } from "./log";
 
 const SECRET = "test-secret";
 
@@ -46,6 +47,34 @@ describe("health", () => {
   test("POST /health returns 404", async () => {
     const res = await setup().app(new Request("http://localhost/health", { method: "POST" }));
     expect(res.status).toBe(404);
+  });
+});
+
+describe("webhook log", () => {
+  test("a valid request logs one line with the event count and status, never the body", async () => {
+    const out = captureLog("info");
+    await setup().app(webhookRequest(textEventBody, sign(textEventBody)));
+    out.restore();
+    expect(out.lines).toHaveLength(1);
+    expect(out.lines[0]).toMatch(/INFO {2}\[webhook\] webhook accepted status=200 events=1 bytes=\d+ ms=\d+/);
+    expect(out.lines[0]).not.toContain("rt-1");
+  });
+
+  test("a bad signature and a bad body log a warning with the status", async () => {
+    const out = captureLog("info");
+    const { app } = setup();
+    await app(webhookRequest(textEventBody, "nope"));
+    await app(webhookRequest("not json", sign("not json")));
+    out.restore();
+    expect(out.lines[0]).toContain("WARN  [webhook] webhook rejected: bad or missing signature status=401");
+    expect(out.lines[1]).toContain("webhook rejected: body is not a LINE event list status=400");
+  });
+
+  test("the health check is not logged", async () => {
+    const out = captureLog("debug");
+    await setup().app(new Request("http://localhost/health"));
+    out.restore();
+    expect(out.lines).toEqual([]);
   });
 });
 

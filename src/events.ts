@@ -1,15 +1,19 @@
 import type { webhook } from "@line/bot-sdk";
 import { ACCESS_COMMANDS, isOwner, runAccessCommand, type Access } from "./access-commands";
 import type { Ai } from "./ai";
+import { describeSource } from "./allowlist";
 import type { AutoTranslateStore } from "./auto-translate";
 import { autoTranslatePrompt, MAX_TRANSLATE_CHARS, parseCommand, parseInstruction, runCommand } from "./commands";
 import { localeFromLine, type LineLanguage, type Locale } from "./language";
+import { logger, preview, shortId, withEvent } from "./log";
 import { plainText, protectMentions, restoreMentions, type Mentions, type ShieldedText } from "./mentions";
 import { MESSAGES, type CommandName } from "./messages";
 import type { RateLimit } from "./ratelimit";
 import { sourceKey, type SessionStore, type StoredMessage } from "./session";
 import { resolveSettings, settingsFor, type SettingsStore } from "./settings";
-import { MAX_TEXT_LENGTH } from "./split";
+import { MAX_TEXT_LENGTH, splitReply } from "./split";
+
+const log = logger("events");
 
 // `mentions` (placeholder -> user ID, see mentions.ts) makes the reply a text v2 message that mentions those users.
 export type Reply = (replyToken: string, text: string, quoteToken?: string, mentions?: Mentions) => Promise<void>;
@@ -54,14 +58,60 @@ export async function handleEvents(
   access: Access,
   autoTranslate: AutoTranslateStore,
 ): Promise<void> {
-  const results = await Promise.allSettled(
-    events.map((event) => handleEvent(event, reply, sessions, ai, settings, languages, rateLimit, access, autoTranslate)),
+  await Promise.all(
+    events.map((event) =>
+      withEvent(shortId(event.webhookEventId), async () => {
+        const started = Date.now();
+        log.info("event", { type: event.type, source: describeSource(event.source), kind: messageKind(event) });
+        try {
+          await handleEvent(event, timedReply(reply), sessions, timedAi(ai), settings, languages, rateLimit, access, autoTranslate);
+        } catch (error) {
+          log.error("event failed", { err: error });
+        } finally {
+          log.info("done", { ms: Date.now() - started });
+        }
+      }),
+    ),
   );
-  for (const result of results) {
-    if (result.status === "rejected") {
-      console.error("Failed to handle event:", result.reason);
+}
+
+function messageKind(event: webhook.Event): string | undefined {
+  return event.type === "message" ? event.message.type : undefined;
+}
+
+// Reply and AI are logged here, once, so every path through handleEvent is covered. Lengths only, never the text.
+function timedReply(reply: Reply): Reply {
+  return async (...args) => {
+    const [, text, quoteToken, mentions] = args;
+    const started = Date.now();
+    try {
+      await reply(...args);
+      log.info("reply sent", {
+        parts: mentions ? 1 : splitReply(text).length,
+        chars: text.length,
+        quote: Boolean(quoteToken),
+        mentions: mentions ? Object.keys(mentions).length : 0,
+        ms: Date.now() - started,
+      });
+    } catch (error) {
+      log.warn("reply failed", { ms: Date.now() - started, err: error });
+      throw error;
     }
-  }
+  };
+}
+
+function timedAi(ai: Ai): Ai {
+  return async (...args) => {
+    const started = Date.now();
+    try {
+      const answer = await ai(...args);
+      log.info("ai answered", { messages: args[0].length, chars: answer.length, ms: Date.now() - started });
+      return answer;
+    } catch (error) {
+      log.warn("ai failed", { messages: args[0].length, ms: Date.now() - started, err: error });
+      throw error;
+    }
+  };
 }
 
 async function handleEvent(
@@ -89,13 +139,14 @@ async function handleEvent(
   if (groupId && event.type === "leave") {
     // Admin and group settings are kept; a new join makes the group pending again.
     access.groups.leave(groupId);
-    console.log(`Left group ${groupId}`);
+    log.info("left group", { group: shortId(groupId) });
     return;
   }
   if (event.type !== "message" || event.message.type !== "text" || !event.replyToken) {
     return;
   }
   const { text } = event.message;
+  log.debug("text", { chars: text.length, text: preview(text) });
   const replyToken = event.replyToken;
   const quoteToken = event.message.quoteToken;
   // Every answer to a text message quotes it; join (onJoin) has no message to quote.
@@ -112,6 +163,7 @@ async function handleEvent(
   const autoTranslating =
     groupId !== undefined && !command && mentionPrompt === null && userId !== undefined && autoTranslate.isOn(groupId, userId);
   if (inGroup && !command && mentionPrompt === null && !autoTranslating) {
+    log.debug("ignored: plain group chat", { group: shortId(groupId) });
     return;
   }
   const owner = isOwner(access, userId);
@@ -125,9 +177,10 @@ async function handleEvent(
     const group = access.groups.request(groupId, userId);
     if (group.status !== "allowed") {
       if (autoTranslating || group.status === "denied" || !access.groups.claimNotice(groupId, NOT_PERMITTED_NOTICE_MS)) {
-        console.log(`Ignored a message to the bot in ${group.status} group ${groupId}`);
+        log.info("ignored: group not allowed", { status: group.status, group: shortId(groupId), id: group.id });
         return;
       }
+      log.info("group not allowed: sending the notice", { status: group.status, group: shortId(groupId), id: group.id });
       const t = MESSAGES[(await senderLanguage(userId, languages)).locale];
       await respond(userId ? t.notPermitted(group.id) : t.unknownSender);
       return;
@@ -136,27 +189,33 @@ async function handleEvent(
   const verdict = key ? rateLimit(key) : "allow";
   if (verdict !== "allow") {
     if (verdict === "notify") {
-      console.log(`Rate limit reached for ${key}`);
+      log.warn("rate limited: sending the notice", { source: shortId(key ?? undefined) });
       // A translation is not a request to the bot: no notice.
       if (!autoTranslating) await respond(MESSAGES[(await senderLanguage(userId, languages)).locale].rateLimited);
+    } else {
+      log.debug("rate limited: silent", { source: shortId(key ?? undefined) });
     }
     return;
   }
   if (autoTranslating && groupId && userId) {
+    log.info("auto-translate", { group: shortId(groupId), chars: text.length });
     await autoTranslateText(shielded, groupId, userId, respond, ai, settings, languages, access, autoTranslate);
     return;
   }
   if (!inGroup && !owner && !(command && DM_COMMANDS.has(command.name))) {
+    log.info("ignored: DM from a non-owner outside the DM commands");
     await respond(MESSAGES[(await senderLanguage(userId, languages)).locale].dmGroupsOnly);
     return;
   }
   // /groups, /approve, /deny, /admin only in a 1:1 chat; in a group they fall through to "unknown command".
   if (command && ACCESS_COMMANDS.has(command.name) && (!inGroup || command.name === GROUP_CONFIG_COMMAND)) {
+    log.info("access command", { name: command.name });
     const { locale } = await senderLanguage(userId, languages);
     await respond(await runAccessCommand(command, { access, userId, groupId, locale }));
     return;
   }
   if (command && command.name !== ELYSIA_COMMAND) {
+    log.info("command", { name: command.name.slice(0, 32) });
     const resetHistory = () => {
       if (key) sessions.clear(key);
     };
@@ -196,7 +255,9 @@ async function handleEvent(
     return;
   }
   // An AI failure throws and is logged by handleEvents: the user gets no reply and nothing is saved.
-  const answer = await ai([...history(sessions, key), { role: "user", content: prompt }]);
+  const past = history(sessions, key);
+  log.info("ai chat", { history: past.length, chars: prompt.length, via: command ? "/elysia" : mentionPrompt === null ? "dm" : "mention" });
+  const answer = await ai([...past, { role: "user", content: prompt }]);
   await respond(answer);
   // Saved only after a successful reply, so the history holds what the user actually saw.
   if (key) {
@@ -209,11 +270,11 @@ async function handleEvent(
 // A join on an allowed/pending group (a leave event was missed) resets it to pending.
 async function onJoin(groupId: string, replyToken: string, reply: Reply, access: Access, languages: Languages): Promise<void> {
   if (access.groups.get(groupId)?.status === "denied") {
-    console.log(`Ignored join event from denied group ${groupId}`);
+    log.info("ignored: join from a denied group", { group: shortId(groupId) });
     return;
   }
   const group = access.groups.join(groupId);
-  console.log(`Joined group ${groupId} (#${group.id}), waiting for /approve`);
+  log.info("joined group, waiting for /approve", { group: shortId(groupId), id: group.id });
   await reply(replyToken, MESSAGES[languages.defaultLocale].joinNotice);
 }
 
@@ -233,7 +294,7 @@ async function autoTranslateText(
   const { text } = shielded;
   // The AI answer is capped (MAX_ANSWER_TOKENS): a longer text could come back cut off.
   if (text.length > MAX_TRANSLATE_CHARS) {
-    console.log(`Skipped auto-translate of a long message in ${groupId}`);
+    log.info("auto-translate skipped: message too long", { group: shortId(groupId), chars: text.length, max: MAX_TRANSLATE_CHARS });
     return;
   }
   const { lineLanguage } = await senderLanguage(userId, languages);
@@ -243,7 +304,7 @@ async function autoTranslateText(
   const answer = await ai([{ role: "user", content: body }], autoTranslatePrompt(language, instruction, earlier));
   // "NOOP" (case and trailing punctuation tolerated): already in the target language.
   if (/^noop\W*$/i.test(answer)) {
-    console.log(`Auto-translate skipped in ${groupId}: the AI answered NOOP`);
+    log.info("auto-translate skipped: already in the target language (NOOP)", { group: shortId(groupId) });
     return;
   }
   autoTranslate.remember(groupId, userId, plainText(body, shielded));

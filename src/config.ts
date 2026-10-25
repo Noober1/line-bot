@@ -1,5 +1,6 @@
 import type { AiConfig } from "./ai";
 import { LOCALES, parseLocale, type Locale } from "./language";
+import { LOG_LEVELS, parseLogLevel, type LogLevel } from "./log";
 import { parseSettingValue, type Settings } from "./settings";
 
 export type Config = {
@@ -18,6 +19,8 @@ export type Config = {
   readonly defaultLocale: Locale;
   // Messages per minute the bot handles per chat (user, group or room). 0 = no limit.
   readonly rateLimitPerMinute: number;
+  // Lowest level the logger prints (LOG_LEVEL).
+  readonly logLevel: LogLevel;
   // Printed at startup, e.g. a removed env key that is still set.
   readonly warnings: readonly string[];
 };
@@ -35,6 +38,7 @@ const DEFAULT_TRANSLATE_LANG = "en";
 const DEFAULT_REPLY_LANG: Locale = "id";
 const DEFAULT_RATE_LIMIT_PER_MINUTE = 10;
 const DEFAULT_MAX_GROUPS_PER_USER = 3;
+const DEFAULT_LOG_LEVEL: LogLevel = "info";
 const REMOVED_KEYS = ["ALLOWED_USER_IDS", "ALLOWED_GROUP_IDS"] as const;
 // A LINE user ID: "U" and 32 lowercase hex characters.
 export const LINE_USER_ID = /^U[0-9a-f]{32}$/;
@@ -79,6 +83,11 @@ export function loadConfig(env: Env): Config {
     throw new Error(`Invalid MAX_GROUPS_PER_USER: ${env.MAX_GROUPS_PER_USER} (use a whole number above 0)`);
   }
 
+  const logLevel = parseLogLevel(env.LOG_LEVEL?.trim() || DEFAULT_LOG_LEVEL);
+  if (!logLevel) {
+    throw new Error(`Invalid LOG_LEVEL: ${env.LOG_LEVEL} (use one of: ${LOG_LEVELS.join(", ")})`);
+  }
+
   const aiBaseUrl = env.AI_BASE_URL?.trim() || DEFAULT_AI_BASE_URL;
   const parsedAiBaseUrl = URL.parse(aiBaseUrl);
   const isDevelopment = env.APP_ENV?.trim() === "development";
@@ -111,6 +120,7 @@ export function loadConfig(env: Env): Config {
     defaultSettings: { translate },
     defaultLocale,
     rateLimitPerMinute,
+    logLevel,
     warnings,
   };
 }

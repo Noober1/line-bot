@@ -2,8 +2,11 @@ import { settingsText, type Command } from "./commands";
 import { LINE_USER_ID } from "./config";
 import type { Group, GroupStore } from "./groups";
 import type { Locale } from "./language";
+import { logger, shortId } from "./log";
 import { MESSAGES, type Messages } from "./messages";
 import { settingsFor, type SettingsStore } from "./settings";
+
+const log = logger("access");
 
 // Get group summary, reduced to its groupName. Rejects when LINE refuses (404: the bot is not in the group).
 export type FetchGroupName = (groupId: string) => Promise<string>;
@@ -76,8 +79,7 @@ async function groupsText({ access, userId }: AccessContext, owner: boolean, t: 
   const lines = rows.map((group, i) => {
     const name = names[i];
     if (name?.status === "rejected") {
-      const reason = name.reason instanceof Error ? name.reason.message : String(name.reason);
-      console.error(`Get group summary failed for group ${group.groupId}: ${reason}`);
+      log.error("get group summary failed", { group: shortId(group.groupId), err: name.reason });
     }
     const line = `#${group.id} ${group.status} ${name?.status === "fulfilled" ? name.value : group.groupId}`;
     return owner ? `${line} | requester: ${group.requesterId ?? "-"} | admin: ${group.adminId ?? "-"}` : line;

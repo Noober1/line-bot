@@ -149,7 +149,25 @@ AI_API_KEY=                               # optional: only if 9router has REQUIR
   (a user, or a whole group). The first message over the limit gets a short notice in the sender's
   language; the rest of that minute is ignored. The count resets when the bot restarts.
 - Duplicate webhook events (LINE redelivery) are skipped by `webhookEventId`, remembered for 24 h in
-  the `seen_events` table. Logged as `Skipped duplicate event <id>`.
+  the `seen_events` table. Logged as `duplicate event skipped`.
+
+## Logging
+
+The terminal (and `journalctl` under systemd) gets one line per thing that happens, in the form
+`HH:MM:SS.mmm LEVEL [scope] message key=value ...`. `LOG_LEVEL` (`debug`, `info` default, `warn`, `error`) sets
+the lowest level printed; colors appear only on a TTY (`NO_COLOR` turns them off). At startup the bot prints
+its config (model, AI base URL, `APP_ENV`, log level, limits, whether an owner is set, database path; no
+secrets). Each `POST /webhook` gets a line (event count, status 200/400/401, duration); `/health` is not
+logged, and Bun's own 413 for an oversized body happens before the bot's code runs, so it is not logged.
+
+Every event gets a short ID (first 8 characters of `webhookEventId`) that is on all its lines
+(`ev=01ABCDEF`): `event` (type, source, message kind), the decision (`command`, `ai chat`, `auto-translate`,
+`ignored: ...`, `rate limited`), `ai answered` (messages sent, chars, ms), `reply sent` (parts, chars, quote,
+mentions, ms) and `done` (ms). Failures are `ai failed` / `reply failed` (warn) and `event failed` (error with
+stack). Message text and AI answers are **never** logged at `info`, only their length; at `debug` the text
+appears, cut to 200 characters, together with full LINE IDs (shortened to 8 characters otherwise). The channel
+secret, the access token and `AI_API_KEY` are replaced by `***` wherever they would appear in a log line.
+A plain chat message in a group the bot ignores is logged at `debug` only.
 
 ## Translate
 

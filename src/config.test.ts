@@ -20,8 +20,18 @@ describe("loadConfig", () => {
       defaultSettings: { translate: "en" },
       defaultLocale: "id",
       rateLimitPerMinute: 10,
+      logLevel: "info",
       warnings: [],
     });
+  });
+
+  test("uses LOG_LEVEL in any case; blank falls back to info", () => {
+    expect(loadConfig({ ...validEnv, LOG_LEVEL: "DEBUG" }).logLevel).toBe("debug");
+    expect(loadConfig({ ...validEnv, LOG_LEVEL: "  " }).logLevel).toBe("info");
+  });
+
+  test("throws on a LOG_LEVEL that is not debug, info, warn or error", () => {
+    expect(() => loadConfig({ ...validEnv, LOG_LEVEL: "verbose" })).toThrow("Invalid LOG_LEVEL: verbose");
   });
 
   test("a removed allowlist key that is still set gives a warning naming it", () => {

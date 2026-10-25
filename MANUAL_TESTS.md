@@ -18,3 +18,13 @@
 2. Anggota lain (auto-translate off) bicara di grup -> tidak diterjemahkan; konteks pengirim on tidak berisi pesan anggota lain.
 3. `/auto-translate` off lalu on lagi, kirim `iya` -> tanpa konteks lama.
 4. Restart bot, kirim pesan -> konteks kosong (hanya memori), terjemahan tetap jalan.
+
+## 21. Logging terminal
+1. Jalankan `bun run dev`: satu baris `started` berisi model, base URL, APP_ENV, log level, limit, `owner=set/none`, path DB, tanpa secret.
+2. Kirim DM ke bot dari akun owner: terlihat urutan `webhook accepted` -> `event` -> `ai chat` -> `ai answered` -> `reply sent` -> `done`, semua dengan `ev=` yang sama (kecuali baris webhook).
+3. Isi pesanmu dan jawaban AI TIDAK muncul di terminal pada `LOG_LEVEL=info`; ganti `LOG_LEVEL=debug`, restart, kirim lagi: teks muncul (dipotong 200 karakter) dan ID LINE penuh.
+4. Di grup allowed, ngobrol biasa tanpa mention: tidak ada baris di `info`, ada `ignored: plain group chat` di `debug`. Di grup belum di-approve: `group not allowed` + `ignored: group not allowed`.
+5. Spam >10 pesan/menit: `rate limited: sending the notice` (warn).
+6. Matikan 9router lalu kirim pesan: `ai failed` (warn) + `event failed` (error + stack), bot tidak crash, tidak ada secret di baris error.
+7. `LOG_LEVEL=verbose` di `.env`: bot berhenti saat startup dengan `Invalid LOG_LEVEL`.
+8. Di `journalctl`/terminal non-TTY (`bun run start | cat`): tidak ada kode warna ANSI.

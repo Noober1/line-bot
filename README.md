@@ -96,6 +96,14 @@ count toward the group's rate limit, and stay silent when it is used up, when th
 texts over 1000 characters. Only your own messages are translated, one way; the switch is kept in the
 `auto_translate` table.
 
+Both `/translate` and auto-translate accept a leading `*instruction*` block (e.g. `*sopan, ke atasan* selamat pagi`)
+that sets the style or context of that one message; the instruction counts toward the 1000 characters, and an
+empty or unclosed block is translated as plain text. Mentions of other users are kept: the bot sends the answer
+as a text v2 message that mentions them again (users LINE gave no ID for stay plain `@Name` text). While
+auto-translate is on, the bot keeps your last 3 translated messages in this group, in memory only (lost on
+restart, cleared when you switch off), and sends them to the AI as context for short or ambiguous texts.
+Other members' messages are never stored.
+
 An unknown command gets `Perintah /<name> tidak dikenal. Ketik /help untuk daftar perintah.`
 (in Indonesian; see "Reply language" for the other languages).
 

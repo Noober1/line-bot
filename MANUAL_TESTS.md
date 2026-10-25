@@ -12,3 +12,9 @@
 3. Mention orang yang belum consent / dari LINE PC (tanpa userId) -> tetap jadi teks biasa, tidak error.
 4. Pesan dengan mention bot (`@Elysia ...`) tetap jalur AI biasa, tidak berubah.
 5. Cek di mobile dan desktop bahwa batas mention textV2 (asumsi 20) tidak error; kalau LINE menolak, catat batas sebenarnya.
+
+## 20c. Konteks auto-translate
+1. Di grup allowed, `/auto-translate` on. Kirim `kamu mau makan malam?` lalu `iya` -> "iya" diterjemahkan sebagai jawaban ("yes"), bukan "ya" lepas konteks.
+2. Anggota lain (auto-translate off) bicara di grup -> tidak diterjemahkan; konteks pengirim on tidak berisi pesan anggota lain.
+3. `/auto-translate` off lalu on lagi, kirim `iya` -> tanpa konteks lama.
+4. Restart bot, kirim pesan -> konteks kosong (hanya memori), terjemahan tetap jalan.

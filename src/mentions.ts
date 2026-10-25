@@ -56,6 +56,10 @@ export function restoreMentions(
   if (!broken && Object.keys(used).length > 0) {
     return { text: answer, mentions: used };
   }
-  const text = answer.replace(PLACEHOLDER, (token) => shielded.labels[token.slice(1, -1)] ?? token);
-  return { text };
+  return { text: plainText(answer, shielded) };
+}
+
+// The text with every known placeholder written back as the "@Name" the user typed.
+export function plainText(text: string, shielded: ShieldedText): string {
+  return text.replace(PLACEHOLDER, (token) => shielded.labels[token.slice(1, -1)] ?? token);
 }

@@ -4,7 +4,7 @@ import type { Ai } from "./ai";
 import type { AutoTranslateStore } from "./auto-translate";
 import { autoTranslatePrompt, MAX_TRANSLATE_CHARS, parseCommand, parseInstruction, runCommand } from "./commands";
 import { localeFromLine, type LineLanguage, type Locale } from "./language";
-import { protectMentions, restoreMentions, type Mentions, type ShieldedText } from "./mentions";
+import { plainText, protectMentions, restoreMentions, type Mentions, type ShieldedText } from "./mentions";
 import { MESSAGES, type CommandName } from "./messages";
 import type { RateLimit } from "./ratelimit";
 import { sourceKey, type SessionStore, type StoredMessage } from "./session";
@@ -143,7 +143,7 @@ async function handleEvent(
     return;
   }
   if (autoTranslating && groupId && userId) {
-    await autoTranslateText(shielded, groupId, userId, respond, ai, settings, languages, access);
+    await autoTranslateText(shielded, groupId, userId, respond, ai, settings, languages, access, autoTranslate);
     return;
   }
   if (!inGroup && !owner && !(command && DM_COMMANDS.has(command.name))) {
@@ -228,6 +228,7 @@ async function autoTranslateText(
   settings: SettingsStore,
   languages: Languages,
   access: Access,
+  autoTranslate: AutoTranslateStore,
 ): Promise<void> {
   const { text } = shielded;
   // The AI answer is capped (MAX_ANSWER_TOKENS): a longer text could come back cut off.
@@ -238,12 +239,14 @@ async function autoTranslateText(
   const { lineLanguage } = await senderLanguage(userId, languages);
   const language = settingsFor(settings, userId, lineLanguage, access.groupSettings.stored(groupId)).resolved().translate;
   const { instruction, text: body } = parseInstruction(text);
-  const answer = await ai([{ role: "user", content: body }], autoTranslatePrompt(language, instruction));
+  const earlier = autoTranslate.recent(groupId, userId);
+  const answer = await ai([{ role: "user", content: body }], autoTranslatePrompt(language, instruction, earlier));
   // "NOOP" (case and trailing punctuation tolerated): already in the target language.
   if (/^noop\W*$/i.test(answer)) {
     console.log(`Auto-translate skipped in ${groupId}: the AI answered NOOP`);
     return;
   }
+  autoTranslate.remember(groupId, userId, plainText(body, shielded));
   const restored = restoreMentions(answer, shielded, MAX_TEXT_LENGTH);
   await respond(restored.text, restored.mentions);
 }

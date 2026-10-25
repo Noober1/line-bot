@@ -906,6 +906,30 @@ describe("handleEvents", () => {
         expect(reply).toHaveBeenCalledWith("rt-1", "re: {u1} halo", "q", { u1: "Uann" });
       });
 
+      test("the next translation gets the sender's earlier translated messages as context", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const ai = echoAi();
+        await handleEvents([plain("kamu mau makan?", "rt-1", "C1", "U5")], okReply(), sessions, ai, settings);
+        await handleEvents([plain("iya", "rt-2", "C1", "U5")], okReply(), sessions, ai, settings);
+        expect(ai.mock.calls[0]![1]).toBe(autoTranslatePrompt("en"));
+        expect(ai.mock.calls[1]![1]).toBe(autoTranslatePrompt("en", undefined, ["kamu mau makan?"]));
+      });
+
+      test("context is not shared with other senders or groups, and NOOP and commands add nothing", async () => {
+        autoTranslate.toggle("C1", "U5");
+        autoTranslate.toggle("C1", "U6");
+        const ai = mock(async (messages: readonly StoredMessage[], _s?: string) =>
+          messages.at(-1)?.content === "already english" ? "NOOP" : "ok",
+        );
+        await handleEvents([plain("already english", "rt-1", "C1", "U5")], okReply(), sessions, ai, settings);
+        await handleEvents([plain("/ping", "rt-2", "C1", "U5")], okReply(), sessions, ai, settings);
+        expect(autoTranslate.recent("C1", "U5")).toEqual([]);
+        await handleEvents([plain("halo", "rt-3", "C1", "U5")], okReply(), sessions, ai, settings);
+        await handleEvents([plain("apa kabar", "rt-4", "C1", "U6")], okReply(), sessions, ai, settings);
+        expect(autoTranslate.recent("C1", "U5")).toEqual(["halo"]);
+        expect(autoTranslate.recent("C1", "U6")).toEqual(["apa kabar"]);
+      });
+
       test("other members, and the same user in another group, are not translated", async () => {
         autoTranslate.toggle("C1", "U5");
         const reply = okReply();
@@ -992,20 +1016,22 @@ describe("handleEvents", () => {
 
       test("the target language follows the /translate resolution", async () => {
         autoTranslate.toggle("C1", "U5");
-        const run = async (lineLanguage?: string) => {
+        // Each run adds to the sender's context, so the expected prompt carries what was remembered before it.
+        const run = async (language: string, lineLanguage?: string) => {
+          const earlier = autoTranslate.recent("C1", "U5");
           const ai = echoAi();
           await handleEvents([plain("halo", "rt-1", "C1", "U5")], okReply(), sessions, ai, settings, {
             lineLanguage: async () => lineLanguage,
             defaultLocale: "id",
           });
-          return ai.mock.calls[0]![1];
+          expect(ai.mock.calls[0]![1]).toBe(autoTranslatePrompt(language, undefined, earlier));
         };
-        expect(await run()).toBe(autoTranslatePrompt("en"));
-        expect(await run("ja-JP")).toBe(autoTranslatePrompt("ja"));
+        await run("en");
+        await run("ja", "ja-JP");
         access.groupSettings.set("C1", "translate", "ko");
-        expect(await run("ja-JP")).toBe(autoTranslatePrompt("ko"));
+        await run("ko", "ja-JP");
         settings.set("U5", "translate", "fr");
-        expect(await run("ja-JP")).toBe(autoTranslatePrompt("fr"));
+        await run("fr", "ja-JP");
       });
     });
   });

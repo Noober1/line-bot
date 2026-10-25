@@ -114,7 +114,7 @@ describe("createAi", () => {
 
 describe("SYSTEM_PROMPT", () => {
   test("is in English and asks for a reply in the user's language", () => {
-    expect(SYSTEM_PROMPT).toContain("You are an assistant in a LINE chat.");
+    expect(SYSTEM_PROMPT).toContain("You are Elysia, an assistant in a LINE chat.");
     expect(SYSTEM_PROMPT).toContain("Always reply in the same language the user writes in.");
   });
 

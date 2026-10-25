@@ -9,6 +9,7 @@ import { localeFromLine, type LineLanguage, type Locale } from "./language";
 import { logger, preview, shortId, withEvent } from "./log";
 import { plainText, protectMentions, restoreMentions, type Mentions, type ShieldedText } from "./mentions";
 import { MESSAGES, type CommandName } from "./messages";
+import { buildChatPrompts, DEFAULT_PERSONA, type ChatPrompts } from "./persona";
 import type { RateLimit } from "./ratelimit";
 import { sourceKey, type SessionStore, type StoredMessage } from "./session";
 import { resolveSettings, settingsFor, type SettingsStore } from "./settings";
@@ -34,6 +35,9 @@ export type Languages = {
   // Reply language when the sender's LINE language is unknown or not supported (DEFAULT_REPLY_LANG).
   readonly defaultLocale: Locale;
 };
+
+// System prompts for plain chat (DM vs group); /translate and auto-translate bring their own.
+const DEFAULT_PROMPTS = buildChatPrompts(DEFAULT_PERSONA);
 
 // How many stored messages go to the AI with each new message.
 export const AI_HISTORY_LIMIT = 20;
@@ -71,6 +75,7 @@ export async function handleEvents(
   access: Access,
   autoTranslate: AutoTranslateStore,
   showLoading?: ShowLoading,
+  prompts: ChatPrompts = DEFAULT_PROMPTS,
 ): Promise<void> {
   await Promise.all(
     events.map((event) =>
@@ -78,7 +83,7 @@ export async function handleEvents(
         const started = Date.now();
         log.info("event", { type: event.type, source: describeSource(event.source), kind: messageKind(event) });
         try {
-          await handleEvent(event, timedReply(reply), sessions, timedAi(ai), settings, languages, rateLimit, access, autoTranslate, showLoading);
+          await handleEvent(event, timedReply(reply), sessions, timedAi(ai), settings, languages, rateLimit, access, autoTranslate, showLoading, prompts);
         } catch (error) {
           log.error("event failed", { err: error });
         } finally {
@@ -140,7 +145,8 @@ async function handleEvent(
   rateLimit: RateLimit,
   access: Access,
   autoTranslate: AutoTranslateStore,
-  showLoading?: ShowLoading,
+  showLoading: ShowLoading | undefined,
+  prompts: ChatPrompts,
 ): Promise<void> {
   const { source } = event;
   const userId = source?.userId;
@@ -288,7 +294,7 @@ async function handleEvent(
   startLoading();
   let answer: string;
   try {
-    answer = await ai([...past, { role: "user", content: prompt }]);
+    answer = await ai([...past, { role: "user", content: prompt }], inGroup ? prompts.group : prompts.dm);
   } catch (error) {
     // The user is told, and nothing is saved: the history holds only what was answered.
     log.error("ai chat failed", { err: error });

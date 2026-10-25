@@ -6,6 +6,7 @@ import { filterDms } from "./allowlist";
 import { createAutoTranslateStore, type AutoTranslateStore } from "./auto-translate";
 import { autoTranslatePrompt, translatePrompt } from "./commands";
 import { createDedupe } from "./dedupe";
+import { buildChatPrompts, DEFAULT_PERSONA, type ChatPrompts } from "./persona";
 import { AI_HISTORY_LIMIT, handleEvents as handle, NOT_PERMITTED_NOTICE_MS, type Languages } from "./events";
 import { createGroupStore, type GroupStore } from "./groups";
 import type { ReplyExtras } from "./flex";
@@ -23,6 +24,7 @@ const GROUP_C1: webhook.Source = { type: "group", groupId: "C1", userId: "U1" };
 const ROOM_R1: webhook.Source = { type: "room", roomId: "R1", userId: "U1" };
 // "@Elysia" (7 chars) at the start of the text, as LINE sends a mention of the bot.
 const BOT_MENTION: webhook.Mention = { mentionees: [{ type: "user", index: 0, length: 7, userId: "Ubot", isSelf: true }] };
+const DEFAULT_PROMPTS = buildChatPrompts(DEFAULT_PERSONA);
 const ELYSIA_USAGE_ID = "Pakai: /elysia <pesan>. Di grup, bisa juga mention bot lalu tulis pesannya.";
 
 // U1 is the owner (see the Access in the tests below), C1 and C9 are allowed groups.
@@ -91,8 +93,9 @@ describe("handleEvents", () => {
     settingsStore: SettingsStore,
     languages: Languages = ID_LANGUAGES,
     rateLimit: RateLimit = () => "allow",
+    prompts?: ChatPrompts,
   ) {
-    return handle(events, reply, sessionStore, ai, settingsStore, languages, rateLimit, access, autoTranslate);
+    return handle(events, reply, sessionStore, ai, settingsStore, languages, rateLimit, access, autoTranslate, undefined, prompts);
   }
 
   afterAll(() => {
@@ -343,11 +346,14 @@ describe("handleEvents", () => {
     sessions.append("U2", "user", "punya U2");
     const ai = echoAi();
     await handleEvents([textEvent("apa kabar?", "rt-1", USER_U1)], okReply(), sessions, ai, settings);
-    expect(ai).toHaveBeenCalledWith([
-      { role: "user", content: "halo" },
-      { role: "assistant", content: "hai" },
-      { role: "user", content: "apa kabar?" },
-    ]);
+    expect(ai).toHaveBeenCalledWith(
+      [
+        { role: "user", content: "halo" },
+        { role: "assistant", content: "hai" },
+        { role: "user", content: "apa kabar?" },
+      ],
+      DEFAULT_PROMPTS.dm,
+    );
   });
 
   test("sends only the newest AI_HISTORY_LIMIT stored messages", async () => {
@@ -377,11 +383,14 @@ describe("handleEvents", () => {
     const ai = echoAi();
     await handleEvents([textEvent("@Elysia dari U1", "rt-1", group, BOT_MENTION)], okReply(), sessions, ai, settings);
     await handleEvents([textEvent("@Elysia dari U2", "rt-2", { ...group, userId: "U2" }, BOT_MENTION)], okReply(), sessions, ai, settings);
-    expect(ai).toHaveBeenLastCalledWith([
-      { role: "user", content: "dari U1" },
-      { role: "assistant", content: "re: dari U1" },
-      { role: "user", content: "dari U2" },
-    ]);
+    expect(ai).toHaveBeenLastCalledWith(
+      [
+        { role: "user", content: "dari U1" },
+        { role: "assistant", content: "re: dari U1" },
+        { role: "user", content: "dari U2" },
+      ],
+      DEFAULT_PROMPTS.group,
+    );
   });
 
   test("group, other group and 1:1 histories never leak into each other; a room is ignored", async () => {
@@ -747,7 +756,7 @@ describe("handleEvents", () => {
     const reply = okReply();
     const ai = echoAi();
     await handleEvents([textEvent("@Elysia apa kabar?", "rt-1", GROUP_C1, BOT_MENTION)], reply, sessions, ai, settings);
-    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "apa kabar?" }]);
+    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "apa kabar?" }], DEFAULT_PROMPTS.group);
     expect(reply).toHaveBeenCalledWith("rt-1", "re: apa kabar?", "q");
     expect(sessions.recent("C1", 10)).toEqual([
       { role: "user", content: "apa kabar?" },
@@ -806,11 +815,14 @@ describe("handleEvents", () => {
     const ai = echoAi();
     const reply = okReply();
     await handleEvents([textEvent("/Elysia  apa kabar?", "rt-1", GROUP_C1)], reply, sessions, ai, settings);
-    expect(ai).toHaveBeenCalledWith([
-      { role: "user", content: "lama" },
-      { role: "assistant", content: "jawaban lama" },
-      { role: "user", content: "apa kabar?" },
-    ]);
+    expect(ai).toHaveBeenCalledWith(
+      [
+        { role: "user", content: "lama" },
+        { role: "assistant", content: "jawaban lama" },
+        { role: "user", content: "apa kabar?" },
+      ],
+      DEFAULT_PROMPTS.group,
+    );
     expect(reply).toHaveBeenCalledWith("rt-1", "re: apa kabar?", "q");
     expect(sessions.recent("C1", 10).at(-2)).toEqual({ role: "user", content: "apa kabar?" });
   });
@@ -845,13 +857,33 @@ describe("handleEvents", () => {
   test("a 1:1 message still goes straight to the AI, mention data or not", async () => {
     const ai = echoAi();
     await handleEvents([textEvent("@Elysia halo", "rt-1", USER_U1, BOT_MENTION)], okReply(), sessions, ai, settings);
-    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "@Elysia halo" }]);
+    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "@Elysia halo" }], DEFAULT_PROMPTS.dm);
   });
 
   test("/elysia <text> in a 1:1 chat goes to the AI", async () => {
     const ai = echoAi();
     await handleEvents([textEvent("/elysia halo", "rt-1", USER_U1)], okReply(), sessions, ai, settings);
-    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "halo" }]);
+    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "halo" }], DEFAULT_PROMPTS.dm);
+  });
+
+  describe("persona prompts", () => {
+    const custom = buildChatPrompts("Kamu bajak laut");
+
+    test("a custom persona reaches the AI: dm prompt in a 1:1 chat, group prompt in a group", async () => {
+      const ai = echoAi();
+      await handleEvents(
+        [textEvent("halo", "rt-1", USER_U1), textEvent("@Elysia halo", "rt-2", GROUP_C1, BOT_MENTION), textEvent("/elysia halo", "rt-3", GROUP_C1)],
+        okReply(), sessions, ai, settings, ID_LANGUAGES, () => "allow", custom,
+      );
+      expect(ai.mock.calls.map(([, system]) => system)).toEqual([custom.dm, custom.group, custom.group]);
+      expect(custom.dm).toContain("Kamu bajak laut");
+    });
+
+    test("/translate does not use the persona", async () => {
+      const ai = echoAi();
+      await handleEvents([textEvent("/translate halo", "rt-1", USER_U1)], okReply(), sessions, ai, settings, ID_LANGUAGES, () => "allow", custom);
+      expect(ai.mock.calls[0]![1]).toBe(translatePrompt("en"));
+    });
   });
 
   describe("group access", () => {
@@ -1186,7 +1218,7 @@ describe("handleEvents", () => {
         await handleEvents([textEvent("/ping", "rt-1", inGroup("C1", "U5")), mention("apa kabar?", "rt-2", "C1", "U5")], reply, sessions, ai, settings);
         expect(reply).toHaveBeenCalledWith("rt-1", "pong", "q");
         expect(ai).toHaveBeenCalledTimes(1);
-        expect(ai.mock.calls[0]![1]).toBeUndefined();
+        expect(ai.mock.calls[0]![1]).toBe(DEFAULT_PROMPTS.group);
         expect(sessions.recent("C1", 10)).toEqual([
           { role: "user", content: "apa kabar?" },
           { role: "assistant", content: "re: apa kabar?" },

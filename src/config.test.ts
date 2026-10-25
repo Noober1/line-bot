@@ -1,15 +1,37 @@
 import { describe, expect, test } from "bun:test";
 import { loadConfig } from "./config";
+import { DEFAULT_PERSONA } from "./persona";
 
 const validEnv = {
   LINE_CHANNEL_SECRET: "secret",
   LINE_CHANNEL_ACCESS_TOKEN: "token",
   AI_MODEL: "combo-chat",
 };
+// Keeps the tests off the disk: a SOUL.md next to the bot must not change them.
+const noFile = () => undefined;
 
 describe("loadConfig", () => {
+  test("PERSONA_PROMPT sets the persona", () => {
+    const config = loadConfig({ ...validEnv, PERSONA_PROMPT: " Kamu bajak laut " }, noFile);
+    expect(config.persona).toBe("Kamu bajak laut");
+    expect(config.personaSource).toBe("env");
+  });
+
+  test("PERSONA_FILE is read through readFile", () => {
+    const config = loadConfig({ ...validEnv, PERSONA_FILE: "soul.md" }, (path) => (path === "soul.md" ? "dari file" : undefined));
+    expect(config.persona).toBe("dari file");
+    expect(config.personaSource).toBe("file");
+  });
+
+  test("a persona error is passed on", () => {
+    expect(() => loadConfig({ ...validEnv, PERSONA_FILE: "nope.md" }, noFile)).toThrow("PERSONA_FILE not found: nope.md");
+    expect(() => loadConfig({ ...validEnv, PERSONA_PROMPT: "a".repeat(4001) }, noFile)).toThrow("Persona is too long");
+  });
+
   test("returns config with defaults when optional keys are unset", () => {
-    expect(loadConfig(validEnv)).toEqual({
+    expect(loadConfig(validEnv, noFile)).toEqual({
+      persona: DEFAULT_PERSONA,
+      personaSource: "default",
       port: 3000,
       lineChannelSecret: "secret",
       lineChannelAccessToken: "token",

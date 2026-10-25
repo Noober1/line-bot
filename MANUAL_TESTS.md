@@ -47,3 +47,14 @@
 5. Di grup: `/help` dan jawaban AI panjang tetap teks biasa yang mengutip pesanmu (tidak ada kartu).
 6. Kartu tidak mengutip pesan di DM (batasan LINE); pastikan tidak terasa membingungkan. Kalau LINE menolak kartu (error 400 di log `reply failed`), catat isi errornya: JSON belum divalidasi ke endpoint validate LINE.
 7. Ganti bahasa LINE ke Inggris/Jepang: label tombol Reset mengikuti bahasa; label bahasa muncul dengan nama aslinya.
+
+## 15. Persona Elysia
+1. Tanpa `PERSONA_PROMPT` dan tanpa `SOUL.md`: DM "kamu siapa?" -> memperkenalkan diri sebagai Elysia, pakai "aku/kamu", mengaku AI.
+2. Tulis `SOUL.md` ("Kamu Elysia yang suka menyisipkan kata 'nyaa'") -> restart -> jawaban mengikuti persona; baris `started` menunjukkan `persona=file chars=N`.
+3. Set `PERSONA_PROMPT` di `.env` -> mengalahkan `SOUL.md` (`persona=env`).
+4. Persona kustom yang menyuruh pakai Markdown/`**` -> balasan tetap plain (aturan tetap menang).
+5. Di grup, mention bot dengan pertanyaan terbuka -> jawaban 1-3 kalimat; pertanyaan yang sama di DM -> lebih panjang.
+6. Tanya hal SARA/melanggar norma -> ditolak sopan, singkat; "kamu AI ya?" -> mengaku AI.
+7. Tanya dalam Inggris/Jepang -> dijawab dengan bahasa yang sama.
+8. `/translate` dan auto-translate tidak terpengaruh persona.
+9. `PERSONA_FILE=tidak-ada.md` -> bot gagal start dengan pesan jelas; persona >4000 karakter -> gagal start.

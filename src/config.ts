@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import type { AiConfig } from "./ai";
+import { loadPersona, type PersonaSource } from "./persona";
 import { LOCALES, parseLocale, type Locale } from "./language";
 import { LOG_LEVELS, parseLogLevel, type LogLevel } from "./log";
 import { parseSettingValue, type Settings } from "./settings";
@@ -23,9 +25,22 @@ export type Config = {
   readonly logLevel: LogLevel;
   // Printed at startup, e.g. a removed env key that is still set.
   readonly warnings: readonly string[];
+  // Who the bot is in chat (PERSONA_PROMPT, SOUL.md or built-in) and where that text came from.
+  readonly persona: string;
+  readonly personaSource: PersonaSource;
 };
 
 type Env = Record<string, string | undefined>;
+
+// undefined = the file does not exist; any other read error is real.
+function readFileOrUndefined(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
 
 const REQUIRED_KEYS = ["LINE_CHANNEL_SECRET", "LINE_CHANNEL_ACCESS_TOKEN", "AI_MODEL"] as const;
 const DEFAULT_PORT = 3000;
@@ -43,7 +58,7 @@ const REMOVED_KEYS = ["ALLOWED_USER_IDS", "ALLOWED_GROUP_IDS"] as const;
 // A LINE user ID: "U" and 32 lowercase hex characters.
 export const LINE_USER_ID = /^U[0-9a-f]{32}$/;
 
-export function loadConfig(env: Env): Config {
+export function loadConfig(env: Env, readFile: (path: string) => string | undefined = readFileOrUndefined): Config {
   const missing = REQUIRED_KEYS.filter((key) => !env[key]?.trim());
   if (missing.length > 0) {
     throw new Error(`Missing required env: ${missing.join(", ")}`);
@@ -105,7 +120,11 @@ export function loadConfig(env: Env): Config {
     (key) => `${key} is no longer used and is ignored: groups are allowed with /approve in a DM to the bot. Remove it from .env.`,
   );
 
+  const { text: persona, source: personaSource } = loadPersona(env, readFile);
+
   return {
+    persona,
+    personaSource,
     port,
     lineChannelSecret: env.LINE_CHANNEL_SECRET!,
     lineChannelAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN!,

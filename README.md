@@ -140,6 +140,15 @@ AI_BASE_URL=http://localhost:20128/v1     # optional; https://, or http:// only 
 AI_API_KEY=                               # optional: only if 9router has REQUIRE_API_KEY=true
 ```
 
+- Persona: the system prompt is the persona plus fixed rules. Persona source, first match wins: `PERSONA_PROMPT`
+  (env), the file `PERSONA_FILE` (default `SOUL.md` in the working directory, optional), the built-in "Elysia"
+  (calls itself *aku* and the user *kamu*). Max 4000 characters; a longer persona, or a `PERSONA_FILE` that is set
+  but missing or empty, stops the bot at startup. The rules after the persona cannot be replaced: reply in the
+  user's language, plain LINE text without Markdown, refuse content that breaks norms or law or attacks people
+  over ethnicity, religion, race or group (SARA), say it is an AI when asked. In a group the bot also answers as
+  briefly as possible (one to three sentences); in a 1:1 chat it does not. `/translate` and auto-translate
+  have their own prompts and ignore the persona. The startup log shows the source and length (`persona=file chars=120`), never the text.
+  Example `SOUL.md`: `You are Elysia, a cheerful assistant who ends answers with "nyaa".`
 - If the AI fails (9router down, error status, empty answer) or times out (40 s), the bot replies with a
   short apology in the sender's language (a different one for a timeout), logs `ai chat failed` with the
   error, and saves nothing. Only auto-translate stays silent on an AI failure (it is not a request to the bot).

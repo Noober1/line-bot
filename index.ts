@@ -11,6 +11,7 @@ import { handleEvents, type Languages, type Reply, type ShowLoading } from "./sr
 import { createGroupStore } from "./src/groups";
 import { configureLog, logger } from "./src/log";
 import { createLineLanguage } from "./src/language";
+import { buildChatPrompts } from "./src/persona";
 import { createRateLimit } from "./src/ratelimit";
 import { createSessionStore } from "./src/session";
 import { createSettingsStore } from "./src/settings";
@@ -59,6 +60,7 @@ const dedupe = createDedupe(db);
 const autoTranslate = createAutoTranslateStore(db);
 const rateLimit = createRateLimit(config.rateLimitPerMinute);
 const ai = createAi(config.ai);
+const prompts = buildChatPrompts(config.persona);
 const languages: Languages = {
   lineLanguage: createLineLanguage(db, async (userId) => (await client.getProfile(userId)).language),
   defaultLocale: config.defaultLocale,
@@ -67,7 +69,7 @@ const languages: Languages = {
 const app = createApp({
   channelSecret: config.lineChannelSecret,
   onEvents: (events) =>
-    void handleEvents(dedupe(filterDms(events)), reply, sessions, ai, settings, languages, rateLimit, access, autoTranslate, showLoading),
+    void handleEvents(dedupe(filterDms(events)), reply, sessions, ai, settings, languages, rateLimit, access, autoTranslate, showLoading, prompts),
 });
 
 const server = Bun.serve({ port: config.port, maxRequestBodySize: MAX_REQUEST_BODY_BYTES, fetch: app });
@@ -81,6 +83,8 @@ log.info("started", {
   logLevel: config.logLevel,
   maxGroupsPerUser: config.maxGroupsPerUser,
   owner: config.ownerUserId ? "set" : "none",
+  // Source and size only, never the text.
+  persona: `${config.personaSource} chars=${config.persona.length}`,
   rateLimitPerMinute: config.rateLimitPerMinute,
   database: config.databasePath,
 });

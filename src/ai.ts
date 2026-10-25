@@ -1,3 +1,4 @@
+import { buildChatPrompts, DEFAULT_PERSONA } from "./persona";
 import type { StoredMessage } from "./session";
 
 export type AiConfig = {
@@ -12,13 +13,8 @@ export type Ai = (messages: readonly StoredMessage[], system?: string) => Promis
 
 type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
 
-// LINE mobile shows *bold* and Markdown as raw characters, so ask for plain text that still reads well.
-export const SYSTEM_PROMPT =
-  "You are an assistant in a LINE chat. Answer briefly and clearly. " +
-  "Always reply in the same language the user writes in. " +
-  "LINE shows replies as plain text, so keep them plain but tidy: short paragraphs separated by a blank line, " +
-  'each list item on its own line starting with "• ", and emoji only sparingly. ' +
-  "Never format text with Markdown or LINE syntax: no *, **, #, _, ~, backticks, code blocks or tables.";
+// Default 1:1 chat prompt (built-in persona + fixed rules); index.ts builds the configured one.
+export const SYSTEM_PROMPT = buildChatPrompts(DEFAULT_PERSONA).dm;
 export const MAX_ANSWER_TOKENS = 1000;
 // The LINE reply token is short-lived (about 60 s), so give up before it expires.
 export const AI_TIMEOUT_MS = 40_000;

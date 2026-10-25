@@ -871,6 +871,13 @@ describe("handleEvents", () => {
         expect(sessions.recent("C1", 10)).toEqual([]);
       });
 
+      test("a leading *instruction* goes into the prompt and not into the text", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const ai = echoAi();
+        await handleEvents([plain("*sopan, ke atasan* selamat pagi", "rt-1", "C1", "U5")], okReply(), sessions, ai, settings);
+        expect(ai).toHaveBeenCalledWith([{ role: "user", content: "selamat pagi" }], autoTranslatePrompt("en", "sopan, ke atasan"));
+      });
+
       test("other members, and the same user in another group, are not translated", async () => {
         autoTranslate.toggle("C1", "U5");
         const reply = okReply();

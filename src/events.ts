@@ -2,7 +2,7 @@ import type { webhook } from "@line/bot-sdk";
 import { ACCESS_COMMANDS, isOwner, runAccessCommand, type Access } from "./access-commands";
 import type { Ai } from "./ai";
 import type { AutoTranslateStore } from "./auto-translate";
-import { autoTranslatePrompt, MAX_TRANSLATE_CHARS, parseCommand, runCommand } from "./commands";
+import { autoTranslatePrompt, MAX_TRANSLATE_CHARS, parseCommand, parseInstruction, runCommand } from "./commands";
 import { localeFromLine, type LineLanguage, type Locale } from "./language";
 import { MESSAGES, type CommandName } from "./messages";
 import type { RateLimit } from "./ratelimit";
@@ -223,7 +223,8 @@ async function autoTranslateText(
   }
   const { lineLanguage } = await senderLanguage(userId, languages);
   const language = settingsFor(settings, userId, lineLanguage, access.groupSettings.stored(groupId)).resolved().translate;
-  const answer = await ai([{ role: "user", content: text }], autoTranslatePrompt(language));
+  const { instruction, text: body } = parseInstruction(text);
+  const answer = await ai([{ role: "user", content: body }], autoTranslatePrompt(language, instruction));
   // "NOOP" (case and trailing punctuation tolerated): already in the target language.
   if (/^noop\W*$/i.test(answer)) {
     console.log(`Auto-translate skipped in ${groupId}: the AI answered NOOP`);

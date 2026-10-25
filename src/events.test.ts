@@ -3,7 +3,8 @@ import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:t
 import type { webhook } from "@line/bot-sdk";
 import type { Access } from "./access-commands";
 import { filterDms } from "./allowlist";
-import { translatePrompt } from "./commands";
+import { createAutoTranslateStore, type AutoTranslateStore } from "./auto-translate";
+import { autoTranslatePrompt, translatePrompt } from "./commands";
 import { createDedupe } from "./dedupe";
 import { AI_HISTORY_LIMIT, handleEvents as handle, NOT_PERMITTED_NOTICE_MS, type Languages } from "./events";
 import { createGroupStore, type GroupStore } from "./groups";
@@ -57,6 +58,7 @@ describe("handleEvents", () => {
   let settings: SettingsStore;
   let groups: GroupStore;
   let access: Access;
+  let autoTranslate: AutoTranslateStore;
   let clock = 0;
 
   beforeEach(() => {
@@ -66,6 +68,7 @@ describe("handleEvents", () => {
     sessions = createSessionStore(db);
     settings = createSettingsStore(db, { translate: "en" });
     groups = createGroupStore(db, () => clock);
+    autoTranslate = createAutoTranslateStore(db);
     access = {
       groups,
       groupSettings: createSettingsStore(db, { translate: "en" }, "group_settings"),
@@ -86,7 +89,7 @@ describe("handleEvents", () => {
     languages: Languages = ID_LANGUAGES,
     rateLimit: RateLimit = () => "allow",
   ) {
-    return handle(events, reply, sessionStore, ai, settingsStore, languages, rateLimit, access);
+    return handle(events, reply, sessionStore, ai, settingsStore, languages, rateLimit, access, autoTranslate);
   }
 
   afterAll(() => {
@@ -839,6 +842,136 @@ describe("handleEvents", () => {
       await handleEvents(dedupe(filterDms([event])), reply, sessions, echoAi(), settings);
       await handleEvents(dedupe(filterDms([event])), reply, sessions, echoAi(), settings);
       expect(reply).toHaveBeenCalledTimes(1);
+    });
+
+    describe("auto-translate", () => {
+      const noopAi = () => mock(async (_m: readonly StoredMessage[], _s?: string) => "NOOP");
+      const plain = (text: string, token: string, groupId: string, userId?: string) =>
+        textEvent(text, token, inGroup(groupId, userId));
+
+      test("/auto-translate toggles the switch for the sender in that group only", async () => {
+        const reply = okReply();
+        await handleEvents([textEvent("/auto-translate", "rt-1", inGroup("C1", "U5"))], reply, sessions, echoAi(), settings);
+        expect(reply).toHaveBeenCalledWith("rt-1", T.autoTranslateOn("en"), "q");
+        expect(autoTranslate.isOn("C1", "U5")).toBe(true);
+        expect(autoTranslate.isOn("C1", "U6")).toBe(false);
+        expect(autoTranslate.isOn("C9", "U5")).toBe(false);
+        await handleEvents([textEvent("/auto-translate", "rt-2", inGroup("C1", "U5"))], reply, sessions, echoAi(), settings);
+        expect(reply).toHaveBeenCalledWith("rt-2", T.autoTranslateOff, "q");
+        expect(autoTranslate.isOn("C1", "U5")).toBe(false);
+      });
+
+      test("a plain message of a sender who is on is translated, quoted, and not saved", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const ai = echoAi();
+        await handleEvents([plain("selamat pagi", "rt-1", "C1", "U5")], reply, sessions, ai, settings);
+        expect(ai).toHaveBeenCalledWith([{ role: "user", content: "selamat pagi" }], autoTranslatePrompt("en"));
+        expect(reply).toHaveBeenCalledWith("rt-1", "re: selamat pagi", "q");
+        expect(sessions.recent("C1", 10)).toEqual([]);
+      });
+
+      test("other members, and the same user in another group, are not translated", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const ai = echoAi();
+        await handleEvents([plain("halo", "rt-1", "C1", "U6"), plain("halo", "rt-2", "C9", "U5")], reply, sessions, ai, settings);
+        expect(reply).not.toHaveBeenCalled();
+        expect(ai).not.toHaveBeenCalled();
+      });
+
+      test("NOOP from the AI sends nothing and saves nothing", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const logSpy = spyOn(console, "log").mockImplementation(() => {});
+        await handleEvents([plain("good morning", "rt-1", "C1", "U5")], reply, sessions, noopAi(), settings);
+        expect(reply).not.toHaveBeenCalled();
+        expect(sessions.recent("C1", 10)).toEqual([]);
+        expect(logSpy).toHaveBeenCalledWith("Auto-translate skipped in C1: the AI answered NOOP");
+        logSpy.mockRestore();
+      });
+
+      test("commands and mentions of a sender who is on take their usual path", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const ai = echoAi();
+        await handleEvents([textEvent("/ping", "rt-1", inGroup("C1", "U5")), mention("apa kabar?", "rt-2", "C1", "U5")], reply, sessions, ai, settings);
+        expect(reply).toHaveBeenCalledWith("rt-1", "pong", "q");
+        expect(ai).toHaveBeenCalledTimes(1);
+        expect(ai.mock.calls[0]![1]).toBeUndefined();
+        expect(sessions.recent("C1", 10)).toEqual([
+          { role: "user", content: "apa kabar?" },
+          { role: "assistant", content: "re: apa kabar?" },
+        ]);
+      });
+
+      test("a group that is not allowed refuses /auto-translate and stays silent for a sender who is on", async () => {
+        const group = groups.join("C5");
+        const reply = okReply();
+        await handleEvents([textEvent("/auto-translate", "rt-1", inGroup("C5", "U5"))], reply, sessions, echoAi(), settings);
+        expect(reply).toHaveBeenCalledWith("rt-1", T.notPermitted(group.id), "q");
+        expect(autoTranslate.isOn("C5", "U5")).toBe(false);
+        autoTranslate.toggle("C5", "U6");
+        clock += NOT_PERMITTED_NOTICE_MS;
+        const ai = echoAi();
+        await handleEvents([plain("halo", "rt-2", "C5", "U6")], reply, sessions, ai, settings);
+        expect(reply).toHaveBeenCalledTimes(1);
+        expect(ai).not.toHaveBeenCalled();
+      });
+
+      test("/auto-translate in a DM is refused, for the owner too", async () => {
+        const reply = okReply();
+        await handleEvents([dm("/auto-translate", "U5"), textEvent("/auto-translate", "rt-own", USER_U1)], reply, sessions, echoAi(), settings);
+        expect(reply).toHaveBeenCalledWith("rt-dm", T.autoTranslateGroupOnly, "q");
+        expect(reply).toHaveBeenCalledWith("rt-own", T.autoTranslateGroupOnly, "q");
+      });
+
+      test("over the group rate limit a translation is dropped silently", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const ai = echoAi();
+        const rateLimit = mock((_key: string) => "notify" as const);
+        await handleEvents([plain("halo", "rt-1", "C1", "U5")], reply, sessions, ai, settings, ID_LANGUAGES, rateLimit);
+        expect(rateLimit).toHaveBeenCalledWith("C1");
+        expect(reply).not.toHaveBeenCalled();
+        expect(ai).not.toHaveBeenCalled();
+      });
+
+      test("an AI failure is logged and gets no reply", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        await handleEvents([plain("halo", "rt-1", "C1", "U5")], reply, sessions, failingAi(), settings);
+        expect(reply).not.toHaveBeenCalled();
+        expect(errorSpy).toHaveBeenCalled();
+      });
+
+      test("a redelivered message is translated once", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const dedupe = createDedupe(new Database(":memory:"));
+        const event = { ...plain("halo", "rt-1", "C1", "U5"), webhookEventId: "e9" } as webhook.Event;
+        const reply = okReply();
+        await handleEvents(dedupe(filterDms([event])), reply, sessions, echoAi(), settings);
+        await handleEvents(dedupe(filterDms([event])), reply, sessions, echoAi(), settings);
+        expect(reply).toHaveBeenCalledTimes(1);
+      });
+
+      test("the target language follows the /translate resolution", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const run = async (lineLanguage?: string) => {
+          const ai = echoAi();
+          await handleEvents([plain("halo", "rt-1", "C1", "U5")], okReply(), sessions, ai, settings, {
+            lineLanguage: async () => lineLanguage,
+            defaultLocale: "id",
+          });
+          return ai.mock.calls[0]![1];
+        };
+        expect(await run()).toBe(autoTranslatePrompt("en"));
+        expect(await run("ja-JP")).toBe(autoTranslatePrompt("ja"));
+        access.groupSettings.set("C1", "translate", "ko");
+        expect(await run("ja-JP")).toBe(autoTranslatePrompt("ko"));
+        settings.set("U5", "translate", "fr");
+        expect(await run("ja-JP")).toBe(autoTranslatePrompt("fr"));
+      });
     });
   });
 });

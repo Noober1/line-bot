@@ -79,12 +79,22 @@ A text message that starts with `/` is a command. Names are case-insensitive.
 | `/ping` | `pong` |
 | `/reset` | clears the chat history of this chat (in a group: the whole group's) |
 | `/translate <teks>` | the text translated into your `translate` language (see "Translate") |
+| `/auto-translate` | in a group: turns auto-translate on or off for you in that group (see below). In a DM: refused, groups only |
 | `/config` | shows or changes your own settings (see "User settings") |
 | `/elysia <teks>` | talks to the AI like a plain message, with the chat history (in a group: the way to ask without a mention) |
 | `/groupconfig [...]` | in a group: the group's settings, admin and owner only (see "User settings") |
 | `/groups`, `/approve`, `/deny`, `/admin` | DM only, see "Access" |
 
-In an allowed group the AI answers only a message that mentions the bot (type `@` and pick the bot) or starts with `/elysia`. The mention itself is not sent to the AI; `@All` does not count. Other messages are ignored, and do not count toward the rate limit. Commands work as usual. `/elysia` alone, or a bare mention, gets a short usage text.
+In an allowed group the AI answers only a message that mentions the bot (type `@` and pick the bot) or starts with `/elysia`. The mention itself is not sent to the AI; `@All` does not count. Other messages are ignored, and do not count toward the rate limit (except those of a member with auto-translate on, see below). Commands work as usual. `/elysia` alone, or a bare mention, gets a short usage text.
+
+`/auto-translate` (allowed groups only) flips a switch for the sender in that group. While it is on, every
+plain text message of that sender in that group is translated into their `translate` language (same order as
+`/translate`: your setting, the group's, your LINE language, the default) and answered as a quoted reply.
+Commands and messages that mention the bot take their usual path. A message already in the target language
+gets no reply (the AI answers `NOOP`, which is not sent). Translations use no chat history and save nothing,
+count toward the group's rate limit, and stay silent when it is used up, when the AI fails (logged), or for
+texts over 1000 characters. Only your own messages are translated, one way; the switch is kept in the
+`auto_translate` table.
 
 An unknown command gets `Perintah /<name> tidak dikenal. Ketik /help untuk daftar perintah.`
 (in Indonesian; see "Reply language" for the other languages).

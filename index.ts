@@ -4,6 +4,7 @@ import { createAi } from "./src/ai";
 import type { Access } from "./src/access-commands";
 import { filterDms } from "./src/allowlist";
 import { createApp, MAX_REQUEST_BODY_BYTES } from "./src/app";
+import { createAutoTranslateStore } from "./src/auto-translate";
 import { loadConfig, type Config } from "./src/config";
 import { createDedupe } from "./src/dedupe";
 import { handleEvents, type Languages, type Reply } from "./src/events";
@@ -44,6 +45,7 @@ const access: Access = {
   groupName: async (groupId) => (await client.getGroupSummary(groupId)).groupName,
 };
 const dedupe = createDedupe(db);
+const autoTranslate = createAutoTranslateStore(db);
 const rateLimit = createRateLimit(config.rateLimitPerMinute);
 const ai = createAi(config.ai);
 console.log(`AI: model ${config.ai.model} via ${config.ai.baseUrl}`);
@@ -55,7 +57,7 @@ const languages: Languages = {
 const app = createApp({
   channelSecret: config.lineChannelSecret,
   onEvents: (events) =>
-    void handleEvents(dedupe(filterDms(events)), reply, sessions, ai, settings, languages, rateLimit, access),
+    void handleEvents(dedupe(filterDms(events)), reply, sessions, ai, settings, languages, rateLimit, access, autoTranslate),
 });
 
 const server = Bun.serve({ port: config.port, maxRequestBodySize: MAX_REQUEST_BODY_BYTES, fetch: app });

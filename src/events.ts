@@ -1,7 +1,8 @@
 import type { webhook } from "@line/bot-sdk";
 import { ACCESS_COMMANDS, isOwner, runAccessCommand, type Access } from "./access-commands";
 import type { Ai } from "./ai";
-import { parseCommand, runCommand } from "./commands";
+import type { AutoTranslateStore } from "./auto-translate";
+import { autoTranslatePrompt, MAX_TRANSLATE_CHARS, parseCommand, runCommand } from "./commands";
 import { localeFromLine, type LineLanguage, type Locale } from "./language";
 import { MESSAGES, type CommandName } from "./messages";
 import type { RateLimit } from "./ratelimit";
@@ -25,11 +26,14 @@ const ELYSIA_COMMAND: CommandName = "elysia";
 // Settings are changed in a 1:1 chat only: a group has no private reply, and a push DM costs quota.
 const CONFIG_COMMAND: CommandName = "config";
 
+// Toggled in a group only; elsewhere the router answers autoTranslateGroupOnly.
+const AUTO_TRANSLATE_COMMAND: CommandName = "auto-translate";
+
 // A pending group gets the "not permitted" notice at most this often.
 export const NOT_PERMITTED_NOTICE_MS = 10 * 60 * 1000;
 
 // What a 1:1 chat with anyone but the owner may use; everything else gets dmGroupsOnly.
-const DM_COMMANDS: ReadonlySet<string> = new Set(["groups", "approve", "deny", "groupconfig", "config", "help", "ping"]);
+const DM_COMMANDS: ReadonlySet<string> = new Set(["groups", "approve", "deny", "groupconfig", "config", "auto-translate", "help", "ping"]);
 
 // The only access command that also works in a group.
 const GROUP_CONFIG_COMMAND = "groupconfig";
@@ -44,9 +48,10 @@ export async function handleEvents(
   languages: Languages,
   rateLimit: RateLimit,
   access: Access,
+  autoTranslate: AutoTranslateStore,
 ): Promise<void> {
   const results = await Promise.allSettled(
-    events.map((event) => handleEvent(event, reply, sessions, ai, settings, languages, rateLimit, access)),
+    events.map((event) => handleEvent(event, reply, sessions, ai, settings, languages, rateLimit, access, autoTranslate)),
   );
   for (const result of results) {
     if (result.status === "rejected") {
@@ -64,6 +69,7 @@ async function handleEvent(
   languages: Languages,
   rateLimit: RateLimit,
   access: Access,
+  autoTranslate: AutoTranslateStore,
 ): Promise<void> {
   const { source } = event;
   const userId = source?.userId;
@@ -93,10 +99,12 @@ async function handleEvent(
   const key = sourceKey(source);
   const command = parseCommand(text);
   const inGroup = groupId !== undefined;
-  // In a group a plain message is for the bot only when it mentions the bot; the rest is members
-  // talking. Ignored here, above the access gate and the rate limit.
+  // In a group a plain message is for the bot only when it mentions the bot, or comes from a sender with
+  // /auto-translate on; the rest is members talking. Ignored here, above the access gate and the rate limit.
   const mentionPrompt = inGroup && !command ? withoutBotMention(event.message) : null;
-  if (inGroup && !command && mentionPrompt === null) {
+  const autoTranslating =
+    groupId !== undefined && !command && mentionPrompt === null && userId !== undefined && autoTranslate.isOn(groupId, userId);
+  if (inGroup && !command && mentionPrompt === null && !autoTranslating) {
     return;
   }
   const owner = isOwner(access, userId);
@@ -109,7 +117,7 @@ async function handleEvent(
   if (groupId && !owner) {
     const group = access.groups.request(groupId, userId);
     if (group.status !== "allowed") {
-      if (group.status === "denied" || !access.groups.claimNotice(groupId, NOT_PERMITTED_NOTICE_MS)) {
+      if (autoTranslating || group.status === "denied" || !access.groups.claimNotice(groupId, NOT_PERMITTED_NOTICE_MS)) {
         console.log(`Ignored a message to the bot in ${group.status} group ${groupId}`);
         return;
       }
@@ -122,8 +130,13 @@ async function handleEvent(
   if (verdict !== "allow") {
     if (verdict === "notify") {
       console.log(`Rate limit reached for ${key}`);
-      await respond(MESSAGES[(await senderLanguage(userId, languages)).locale].rateLimited);
+      // A translation is not a request to the bot: no notice.
+      if (!autoTranslating) await respond(MESSAGES[(await senderLanguage(userId, languages)).locale].rateLimited);
     }
+    return;
+  }
+  if (autoTranslating && groupId && userId) {
+    await autoTranslateText(text, groupId, userId, respond, ai, settings, languages, access);
     return;
   }
   if (!inGroup && !owner && !(command && DM_COMMANDS.has(command.name))) {
@@ -151,6 +164,15 @@ async function handleEvent(
     const groupStored = groupId ? access.groupSettings.stored(groupId) : {};
     const userSettings = userId ? settingsFor(settings, userId, lineLanguage, groupStored) : null;
     const defaults = resolveSettings({}, settings.defaults, undefined, groupStored);
+    if (groupId && command.name === AUTO_TRANSLATE_COMMAND) {
+      const t = MESSAGES[locale];
+      if (!userId || !userSettings) {
+        await respond(t.settingsUnavailable);
+        return;
+      }
+      await respond(autoTranslate.toggle(groupId, userId) ? t.autoTranslateOn(userSettings.resolved().translate) : t.autoTranslateOff);
+      return;
+    }
     const context = { resetHistory, settings: userSettings, defaults, ai, locale };
     await respond(await runCommand(command, context));
     return;
@@ -180,6 +202,34 @@ async function onJoin(groupId: string, replyToken: string, reply: Reply, access:
   const group = access.groups.join(groupId);
   console.log(`Joined group ${groupId} (#${group.id}), waiting for /approve`);
   await reply(replyToken, MESSAGES[languages.defaultLocale].joinNotice);
+}
+
+// Only the text and the translate prompt go to the AI, and nothing is saved. An AI failure throws:
+// handleEvents logs it and the sender gets no reply.
+async function autoTranslateText(
+  text: string,
+  groupId: string,
+  userId: string,
+  respond: (text: string) => Promise<void>,
+  ai: Ai,
+  settings: SettingsStore,
+  languages: Languages,
+  access: Access,
+): Promise<void> {
+  // The AI answer is capped (MAX_ANSWER_TOKENS): a longer text could come back cut off.
+  if (text.length > MAX_TRANSLATE_CHARS) {
+    console.log(`Skipped auto-translate of a long message in ${groupId}`);
+    return;
+  }
+  const { lineLanguage } = await senderLanguage(userId, languages);
+  const language = settingsFor(settings, userId, lineLanguage, access.groupSettings.stored(groupId)).resolved().translate;
+  const answer = await ai([{ role: "user", content: text }], autoTranslatePrompt(language));
+  // "NOOP" (case and trailing punctuation tolerated): already in the target language.
+  if (/^noop\W*$/i.test(answer)) {
+    console.log(`Auto-translate skipped in ${groupId}: the AI answered NOOP`);
+    return;
+  }
+  await respond(answer);
 }
 
 async function senderLanguage(userId: string | undefined, languages: Languages) {

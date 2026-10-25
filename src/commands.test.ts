@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { SYSTEM_PROMPT, type Ai } from "./ai";
-import { MAX_TRANSLATE_CHARS, parseCommand, runCommand, translatePrompt, type CommandContext } from "./commands";
+import { autoTranslatePrompt, MAX_TRANSLATE_CHARS, parseCommand, runCommand, translatePrompt, type CommandContext } from "./commands";
 import { LOCALES } from "./language";
 import type { StoredMessage } from "./session";
 import { createSettingsStore, settingsFor, type SettingsStore } from "./settings";
@@ -74,10 +74,15 @@ describe("runCommand", () => {
         "/ping - cek apakah bot aktif",
         "/reset - hapus riwayat chat",
         "/translate - terjemahkan teks ke bahasa pilihan kamu (atur: /config translate)",
+        "/auto-translate - nyalakan/matikan terjemahan otomatis pesanmu di grup ini",
         "/config - lihat atau ubah pengaturan kamu",
         "/elysia - tanya AI (di grup: pengganti mention bot)",
       ].join("\n"),
     );
+  });
+
+  test("/auto-translate through the router (outside a group) says it is for groups only", () => {
+    expect(runCommand({ name: "auto-translate", args: "" }, noopContext)).toBe("/auto-translate hanya bisa dipakai di grup.");
   });
 
   test("/reset clears the history and confirms", () => {
@@ -316,6 +321,22 @@ describe("translatePrompt", () => {
   });
 });
 
+describe("autoTranslatePrompt", () => {
+  test("builds on the translate prompt and allows NOOP only for text already in the target language", () => {
+    const prompt = autoTranslatePrompt("ja");
+    expect(prompt.startsWith(translatePrompt("ja"))).toBe(true);
+    expect(prompt).toContain("NOOP");
+    expect(prompt).toContain("hanya jika seluruh teks sudah dalam bahasa tujuan");
+  });
+
+  test("greetings, questions and requests are translated, not skipped", () => {
+    const prompt = autoTranslatePrompt("ja");
+    expect(prompt).toContain("Sapaan, pertanyaan, atau permintaan tetap diterjemahkan");
+    expect(prompt).toContain("jika ragu, terjemahkan");
+    expect(prompt).not.toContain("tidak ada yang perlu diterjemahkan");
+  });
+});
+
 describe("reply language", () => {
   let store: SettingsStore;
 
@@ -331,6 +352,7 @@ describe("reply language", () => {
         "/ping - check that the bot is up",
         "/reset - clear the chat history",
         "/translate - translate text into your chosen language (set it: /config translate)",
+        "/auto-translate - turn automatic translation of your messages in this group on or off",
         "/config - view or change your settings",
         "/elysia - ask the AI (in a group: instead of mentioning the bot)",
       ].join("\n"),
@@ -381,6 +403,7 @@ describe("reply language", () => {
         "/ping",
         "/reset",
         "/translate",
+        "/auto-translate",
         "/config",
         "/elysia",
       ]);

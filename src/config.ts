@@ -29,6 +29,8 @@ const DEFAULT_PORT = 3000;
 const MAX_PORT = 65535;
 const DEFAULT_DATABASE_PATH = "bot.sqlite";
 const DEFAULT_AI_BASE_URL = "http://localhost:20128/v1";
+// Chat text and AI_API_KEY go to AI_BASE_URL, so plain http is only allowed to this machine (or any host when APP_ENV=development, e.g. over a tailnet).
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const DEFAULT_TRANSLATE_LANG = "en";
 const DEFAULT_REPLY_LANG: Locale = "id";
 const DEFAULT_RATE_LIMIT_PER_MINUTE = 10;
@@ -77,6 +79,19 @@ export function loadConfig(env: Env): Config {
     throw new Error(`Invalid MAX_GROUPS_PER_USER: ${env.MAX_GROUPS_PER_USER} (use a whole number above 0)`);
   }
 
+  const aiBaseUrl = env.AI_BASE_URL?.trim() || DEFAULT_AI_BASE_URL;
+  const parsedAiBaseUrl = URL.parse(aiBaseUrl);
+  const isDevelopment = env.APP_ENV?.trim() === "development";
+  if (
+    !parsedAiBaseUrl ||
+    !(parsedAiBaseUrl.protocol === "https:" ||
+      (parsedAiBaseUrl.protocol === "http:" && (isDevelopment || LOOPBACK_HOSTS.has(parsedAiBaseUrl.hostname))))
+  ) {
+    throw new Error(
+      `Invalid AI_BASE_URL: ${aiBaseUrl} (use https://, or http:// only for localhost, 127.0.0.1 or [::1]; any http:// host needs APP_ENV=development)`,
+    );
+  }
+
   const warnings = REMOVED_KEYS.filter((key) => env[key]?.trim()).map(
     (key) => `${key} is no longer used and is ignored: groups are allowed with /approve in a DM to the bot. Remove it from .env.`,
   );
@@ -89,7 +104,7 @@ export function loadConfig(env: Env): Config {
     maxGroupsPerUser,
     databasePath: env.DATABASE_PATH?.trim() || DEFAULT_DATABASE_PATH,
     ai: {
-      baseUrl: env.AI_BASE_URL?.trim() || DEFAULT_AI_BASE_URL,
+      baseUrl: aiBaseUrl,
       apiKey: env.AI_API_KEY?.trim() || undefined,
       model: env.AI_MODEL!.trim(),
     },

@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { createApp } from "./app";
+import { createApp, MAX_REQUEST_BODY_BYTES } from "./app";
 
 const SECRET = "test-secret";
 
@@ -119,5 +119,75 @@ describe("POST /webhook", () => {
   test("GET /webhook returns 404", async () => {
     const res = await setup().app(new Request("http://localhost/webhook"));
     expect(res.status).toBe(404);
+  });
+});
+
+// The limit lives in Bun.serve, not in the handler, so these tests start a real server on a free port.
+function serve() {
+  const { app, onEvents } = setup();
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: MAX_REQUEST_BODY_BYTES, fetch: app });
+  return { server, onEvents };
+}
+
+// Bun's fetch rewrites Content-Length and fails with ECONNRESET on a large upload, so send raw headers and read the status line.
+async function statusLineFor(port: number, contentLength: number): Promise<string> {
+  const { promise, resolve } = Promise.withResolvers<string>();
+  let out = "";
+  await Bun.connect({
+    hostname: "127.0.0.1",
+    port,
+    socket: {
+      open(socket) {
+        socket.write(`POST /webhook HTTP/1.1\r\nHost: localhost\r\nContent-Length: ${contentLength}\r\n\r\n`);
+      },
+      data(socket, data) {
+        out += data.toString();
+        if (out.includes("\r\n")) {
+          resolve(out.slice(0, out.indexOf("\r\n")));
+          socket.end();
+        }
+      },
+      close() {
+        resolve(out);
+      },
+    },
+  });
+  return promise;
+}
+
+describe("request body limit (Bun.serve)", () => {
+  test("a body over MAX_REQUEST_BODY_BYTES gets 413 before the handler runs", async () => {
+    const { server, onEvents } = serve();
+    try {
+      expect(await statusLineFor(server.port!,MAX_REQUEST_BODY_BYTES + 1)).toStartWith("HTTP/1.1 413");
+      expect(onEvents).not.toHaveBeenCalled();
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a body of exactly the limit reaches the handler (unsigned -> 401)", async () => {
+    const { server } = serve();
+    try {
+      const res = await fetch(new URL("/webhook", server.url), { method: "POST", body: "a".repeat(MAX_REQUEST_BODY_BYTES) });
+      expect(res.status).toBe(401);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a normal signed webhook still returns 200", async () => {
+    const { server, onEvents } = serve();
+    try {
+      const res = await fetch(new URL("/webhook", server.url), {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-line-signature": sign(textEventBody) },
+        body: textEventBody,
+      });
+      expect(res.status).toBe(200);
+      expect(onEvents).toHaveBeenCalledTimes(1);
+    } finally {
+      server.stop(true);
+    }
   });
 });

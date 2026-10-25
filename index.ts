@@ -3,7 +3,7 @@ import { messagingApi } from "@line/bot-sdk";
 import { createAi } from "./src/ai";
 import type { Access } from "./src/access-commands";
 import { filterDms } from "./src/allowlist";
-import { createApp } from "./src/app";
+import { createApp, MAX_REQUEST_BODY_BYTES } from "./src/app";
 import { loadConfig, type Config } from "./src/config";
 import { createDedupe } from "./src/dedupe";
 import { handleEvents, type Languages, type Reply } from "./src/events";
@@ -58,5 +58,5 @@ const app = createApp({
     void handleEvents(dedupe(filterDms(events)), reply, sessions, ai, settings, languages, rateLimit, access),
 });
 
-const server = Bun.serve({ port: config.port, fetch: app });
+const server = Bun.serve({ port: config.port, maxRequestBodySize: MAX_REQUEST_BODY_BYTES, fetch: app });
 console.log(`Listening on ${server.url}`);

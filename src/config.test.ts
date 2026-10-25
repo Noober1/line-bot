@@ -77,17 +77,54 @@ describe("loadConfig", () => {
   test("uses AI_BASE_URL, AI_API_KEY and AI_MODEL when set, trimmed", () => {
     const { ai } = loadConfig({
       ...validEnv,
-      AI_BASE_URL: " http://10.0.0.5:20128/v1 ",
+      AI_BASE_URL: " https://ai.example.com/v1 ",
       AI_API_KEY: " k-123 ",
       AI_MODEL: " cc/claude-opus-4-7 ",
     });
-    expect(ai).toEqual({ baseUrl: "http://10.0.0.5:20128/v1", apiKey: "k-123", model: "cc/claude-opus-4-7" });
+    expect(ai).toEqual({ baseUrl: "https://ai.example.com/v1", apiKey: "k-123", model: "cc/claude-opus-4-7" });
   });
 
   test("blank AI_BASE_URL and AI_API_KEY fall back to the default and no key", () => {
     const { ai } = loadConfig({ ...validEnv, AI_BASE_URL: "  ", AI_API_KEY: "  " });
     expect(ai.baseUrl).toBe("http://localhost:20128/v1");
     expect(ai.apiKey).toBeUndefined();
+  });
+
+  test("accepts http:// AI_BASE_URL on a loopback host, any case", () => {
+    for (const value of ["http://localhost:20128/v1", "http://127.0.0.1:20128/v1", "http://[::1]:20128/v1", "HTTP://LocalHost:20128/v1"]) {
+      expect(loadConfig({ ...validEnv, AI_BASE_URL: value }).ai.baseUrl).toBe(value);
+    }
+  });
+
+  test("throws on an http:// AI_BASE_URL that is not a loopback host", () => {
+    for (const value of ["http://10.0.0.5:20128/v1", "http://ai.example.com/v1", "http://127.0.0.2/v1", "http://localhost.example.com/v1"]) {
+      expect(() => loadConfig({ ...validEnv, AI_BASE_URL: value })).toThrow(
+        `Invalid AI_BASE_URL: ${value} (use https://, or http:// only for localhost, 127.0.0.1 or [::1]; any http:// host needs APP_ENV=development)`,
+      );
+    }
+  });
+
+  test("throws on a malformed AI_BASE_URL or another scheme", () => {
+    for (const value of ["not a url", "localhost:20128/v1", "https://", "ftp://ai.example.com/v1"]) {
+      expect(() => loadConfig({ ...validEnv, AI_BASE_URL: value })).toThrow(`Invalid AI_BASE_URL: ${value}`);
+    }
+  });
+
+  test("accepts http:// AI_BASE_URL on any host when APP_ENV is development", () => {
+    const { ai } = loadConfig({ ...validEnv, APP_ENV: " development ", AI_BASE_URL: "http://100.64.0.7:20128/v1" });
+    expect(ai.baseUrl).toBe("http://100.64.0.7:20128/v1");
+  });
+
+  test("still rejects a malformed or non-http(s) AI_BASE_URL when APP_ENV is development", () => {
+    for (const value of ["not a url", "ftp://ai.example.com/v1"]) {
+      expect(() => loadConfig({ ...validEnv, APP_ENV: "development", AI_BASE_URL: value })).toThrow(`Invalid AI_BASE_URL: ${value}`);
+    }
+  });
+
+  test("keeps rejecting a remote http:// AI_BASE_URL for any other APP_ENV", () => {
+    for (const APP_ENV of ["production", "Development", ""]) {
+      expect(() => loadConfig({ ...validEnv, APP_ENV, AI_BASE_URL: "http://100.64.0.7:20128/v1" })).toThrow("Invalid AI_BASE_URL");
+    }
   });
 
   test("throws when AI_MODEL is blank", () => {

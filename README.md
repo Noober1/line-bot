@@ -22,7 +22,7 @@ Health check: `GET /health` returns `{"status":"ok"}`.
 ## Webhook
 
 `POST /webhook` receives LINE events. It checks the `x-line-signature` header
-(401 if missing or wrong), returns 200 right away, then answers every text message:
+(401 if missing or wrong; bodies over 1 MB get 413 from Bun first, see `MAX_REQUEST_BODY_BYTES` in `src/app.ts`), returns 200 right away, then answers every text message:
 commands (see below) get their reply, any other text is answered by the AI (see "AI chat").
 
 Dev with a real LINE channel:
@@ -110,7 +110,7 @@ chat plus the new one.
 
 ```bash
 AI_MODEL=my-combo                         # required: 9router combo or provider/model
-AI_BASE_URL=http://localhost:20128/v1     # optional
+AI_BASE_URL=http://localhost:20128/v1     # optional; https://, or http:// only on localhost, 127.0.0.1 or [::1]
 AI_API_KEY=                               # optional: only if 9router has REQUIRE_API_KEY=true
 ```
 
@@ -118,6 +118,9 @@ AI_API_KEY=                               # optional: only if 9router has REQUIR
   sends **no reply**, logs `Failed to handle event: ...`, and saves nothing.
 - Long answers are split into up to 5 messages of at most 5000 characters (LINE's limits), at a paragraph, line or sentence break when possible.
 - Chat text is sent to whatever provider your 9router model or combo uses. Choose accordingly.
+- `AI_BASE_URL` must use `https://`; plain `http://` is accepted only for `localhost`, `127.0.0.1` and `[::1]`
+  (otherwise the bot stops at startup with `Invalid AI_BASE_URL`). A 9router on another machine needs HTTPS in front,
+  except in development: with `APP_ENV=development` in `.env`, `http://` is accepted for any host (e.g. a Tailscale address). Never set it in production.
 - Keep 9router on localhost, or turn on `REQUIRE_API_KEY=true`, and change its default
   dashboard password (`INITIAL_PASSWORD`, default `123456`).
 

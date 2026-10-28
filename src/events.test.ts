@@ -1280,6 +1280,20 @@ describe("handleEvents", () => {
         expect(ai).toHaveBeenCalledWith([{ role: "user", content: "selamat pagi" }], autoTranslatePrompt("en", "sopan, ke atasan"));
       });
 
+      test("an *instruction* also applies to the next messages until a new one replaces it", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const ai = echoAi();
+        await handleEvents([plain("*kansai* lagi makan?", "rt-1", "C1", "U5")], okReply(), sessions, ai, settings);
+        await handleEvents([plain("beneran?", "rt-2", "C1", "U5")], okReply(), sessions, ai, settings);
+        await handleEvents([plain("*sopan* terima kasih", "rt-3", "C1", "U5")], okReply(), sessions, ai, settings);
+        await handleEvents([plain("sampai jumpa", "rt-4", "C1", "U5")], okReply(), sessions, ai, settings);
+        const style = (i: number) => ai.mock.calls[i]![1]!;
+        expect(style(1)).toContain("kansai");
+        expect(style(2)).toContain("sopan");
+        expect(style(3)).toContain("sopan");
+        expect(style(3)).not.toContain("kansai");
+      });
+
       test("a mention of another user goes to the AI as a placeholder and is mentioned again in the reply", async () => {
         autoTranslate.toggle("C1", "U5");
         const reply = okReply();

@@ -105,7 +105,8 @@ texts over 1000 characters. Only your own messages are translated, one way; the 
 `auto_translate` table.
 
 Both `/translate` and auto-translate accept a leading `*instruction*` block (e.g. `*sopan, ke atasan* selamat pagi`)
-that sets the style or context of that one message; the instruction counts toward the 1000 characters, and an
+that sets the style or context of that message (in auto-translate it also stays for your following messages in
+that group until a new instruction replaces it or you switch off); the instruction counts toward the 1000 characters, and an
 empty or unclosed block is translated as plain text. Mentions of other users are kept: the bot sends the answer
 as a text v2 message that mentions them again (users LINE gave no ID for stay plain `@Name` text). While
 auto-translate is on, the bot keeps your last 3 translated messages in this group, in memory only (lost on

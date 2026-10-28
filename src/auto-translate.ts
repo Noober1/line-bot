@@ -8,7 +8,11 @@ export type AutoTranslateStore = {
   // The sender's last translated messages in that group, oldest first; kept in memory only (lost on restart,
   // emptied when the sender switches off) and only for senders who are on. Context for the next translation.
   readonly recent: (groupId: string, userId: string) => readonly string[];
-  readonly remember: (groupId: string, userId: string, text: string) => void;
+  // A new `instruction` replaces the sticky one; without it the sticky one stays.
+  readonly remember: (groupId: string, userId: string, text: string, instruction?: string) => void;
+  // The last `*instruction*` the sender used in that group: applies to the following messages too, until
+  // replaced or the sender switches off. Memory only, like the context.
+  readonly instruction: (groupId: string, userId: string) => string | undefined;
 };
 
 export const CONTEXT_MESSAGES = 3;
@@ -31,6 +35,7 @@ export function createAutoTranslateStore(db: Database): AutoTranslateStore {
   const insert = db.query<void, [string, string]>("INSERT INTO auto_translate (group_id, user_id) VALUES (?, ?)");
   // shortcut: one entry per sender who is on, never pruned for groups the bot left; fine at this scale.
   const context = new Map<string, readonly string[]>();
+  const instructions = new Map<string, string>();
   const contextKey = (groupId: string, userId: string) => `${groupId}\n${userId}`;
   const isOn = (groupId: string, userId: string) => select.get(groupId, userId) !== null;
   return {
@@ -38,15 +43,18 @@ export function createAutoTranslateStore(db: Database): AutoTranslateStore {
     toggle: (groupId, userId) => {
       if (remove.run(groupId, userId).changes === 1) {
         context.delete(contextKey(groupId, userId));
+        instructions.delete(contextKey(groupId, userId));
         return false;
       }
       insert.run(groupId, userId);
       return true;
     },
     recent: (groupId, userId) => context.get(contextKey(groupId, userId)) ?? [],
-    remember: (groupId, userId, text) => {
+    instruction: (groupId, userId) => instructions.get(contextKey(groupId, userId)),
+    remember: (groupId, userId, text, instruction) => {
       if (!isOn(groupId, userId)) return;
       const key = contextKey(groupId, userId);
+      if (instruction) instructions.set(key, instruction);
       context.set(key, [...(context.get(key) ?? []), text.slice(0, CONTEXT_CHARS)].slice(-CONTEXT_MESSAGES));
     },
   };

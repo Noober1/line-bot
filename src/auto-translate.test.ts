@@ -48,6 +48,20 @@ describe("auto-translate store", () => {
     expect(store.recent("C1", "U1")).toEqual([]);
   });
 
+  test("an instruction sticks until replaced, and is cleared when switching off", () => {
+    const store = createAutoTranslateStore(new Database(":memory:"));
+    store.toggle("C1", "U1");
+    store.remember("C1", "U1", "a", "kansai");
+    store.remember("C1", "U1", "b");
+    expect(store.instruction("C1", "U1")).toBe("kansai");
+    store.remember("C1", "U1", "c", "sopan");
+    expect(store.instruction("C1", "U1")).toBe("sopan");
+    expect(store.instruction("C1", "U2")).toBeUndefined();
+    store.toggle("C1", "U1");
+    store.toggle("C1", "U1");
+    expect(store.instruction("C1", "U1")).toBeUndefined();
+  });
+
   test("context is memory only: a new store on the same database starts empty", () => {
     const db = new Database(":memory:");
     const first = createAutoTranslateStore(db);

@@ -356,7 +356,9 @@ async function autoTranslateText(
   }
   const { lineLanguage } = await senderLanguage(userId, languages);
   const language = settingsFor(settings, userId, lineLanguage, access.groupSettings.stored(groupId)).resolved().translate;
-  const { instruction, text: body } = parseInstruction(text);
+  const { instruction: given, text: body } = parseInstruction(text);
+  // An instruction sticks for the sender's following messages until a new one replaces it.
+  const instruction = given ?? autoTranslate.instruction(groupId, userId);
   const earlier = autoTranslate.recent(groupId, userId);
   const answer = await ai([{ role: "user", content: body }], autoTranslatePrompt(language, instruction, earlier));
   // "NOOP" (case and trailing punctuation tolerated): already in the target language.
@@ -364,7 +366,7 @@ async function autoTranslateText(
     log.info("auto-translate skipped: already in the target language (NOOP)", { group: shortId(groupId) });
     return;
   }
-  autoTranslate.remember(groupId, userId, plainText(body, shielded));
+  autoTranslate.remember(groupId, userId, plainText(body, shielded), given);
   const restored = restoreMentions(answer, shielded, MAX_TEXT_LENGTH);
   await respond(restored.text, restored.mentions);
 }

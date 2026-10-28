@@ -1,4 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { logger, shortId } from "./log";
+
+const log = logger("language");
 
 // Languages the bot's own texts (/help, /config, errors) come in.
 export const LOCALES = ["id", "en", "ja", "zh-Hans", "zh-Hant"] as const;
@@ -51,11 +54,11 @@ export function createLineLanguage(
       language = await fetchLanguage(userId);
     } catch (error) {
       // Not cached, so the next command tries again. An expired value beats none.
-      console.error(`Get profile failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`);
+      log.error("get profile failed", { user: shortId(userId), err: error });
       return cached?.language ?? undefined;
     }
     // Logged so the mapping in localeFromLine can be checked against real LINE values.
-    console.log(`LINE language of user ${userId}: ${language ?? "(none)"}`);
+    log.info("LINE language fetched", { user: shortId(userId), language: language ?? "(none)" });
     upsert.run(userId, language ?? null, now());
     return language;
   };

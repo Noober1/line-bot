@@ -48,3 +48,7 @@ plans/
 
 # codegraph index
 .codegraph/
+
+# local-only notes and test preload
+MANUAL_TESTS.md
+test-setup.ts

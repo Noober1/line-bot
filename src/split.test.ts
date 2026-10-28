@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_REPLY_MESSAGES, MAX_TEXT_LENGTH, splitReply } from "./split";
+import { MAX_REPLY_MESSAGES, MAX_TEXT_LENGTH, replyMessages, splitReply } from "./split";
 
 describe("splitReply", () => {
   test("a short text is one part, unchanged", () => {
@@ -34,5 +34,73 @@ describe("splitReply", () => {
     const parts = splitReply(text, 500, 100);
     expect(parts.every((p) => p.length <= 500)).toBe(true);
     expect(parts.join(" ")).toBe(text);
+  });
+});
+
+describe("replyMessages with a card and quick replies", () => {
+  const card = "Judul\nbaris satu\nbaris dua";
+
+  test("a card is one Flex message with no quote token", () => {
+    const messages = replyMessages(card, "q", undefined, { flex: "card" });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ type: "flex", altText: card });
+    expect(messages[0]).not.toHaveProperty("quoteToken");
+  });
+
+  test("a text that cannot be a card goes out as the usual quoted text", () => {
+    expect(replyMessages("cuma satu baris", "q", undefined, { flex: "card" })).toEqual([
+      { type: "text", text: "cuma satu baris", quoteToken: "q" },
+    ]);
+  });
+
+  test("mentions win over a card: the answer stays a quoted text v2 message", () => {
+    const messages = replyMessages(card, "q", { u1: "Uann" }, { flex: "card" });
+    expect(messages[0]).toMatchObject({ type: "textV2", quoteToken: "q" });
+  });
+
+  test("quick replies ride on the last message only", () => {
+    const options = [{ label: "English", text: "/config translate en" }];
+    const messages = replyMessages("a".repeat(12_000), "q", undefined, { quickReplies: options });
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).not.toHaveProperty("quickReply");
+    expect(messages[2]).toHaveProperty("quickReply.items.0.action.text", "/config translate en");
+  });
+
+  test("a card can carry quick replies", () => {
+    const messages = replyMessages(card, "q", undefined, { flex: "card", quickReplies: [{ label: "x", text: "/y" }] });
+    expect(messages[0]).toMatchObject({ type: "flex", quickReply: { items: [{ type: "action" }] } });
+  });
+
+  test("no extras gives exactly what it gave before", () => {
+    expect(replyMessages("halo", "q", undefined, {})).toEqual([{ type: "text", text: "halo", quoteToken: "q" }]);
+  });
+});
+
+describe("replyMessages with mentions", () => {
+  test("is one text v2 message with a mention substitution per user, quoting the user's message", () => {
+    expect(replyMessages("hi {u1}", "q", { u1: "Uann" })).toEqual([
+      { type: "textV2", text: "hi {u1}", quoteToken: "q", substitution: { u1: { type: "mention", mentionee: { type: "user", userId: "Uann" } } } },
+    ]);
+  });
+
+  test("without a quote token there is no quoteToken field", () => {
+    expect(replyMessages("hi {u1}", undefined, { u1: "Uann" })[0]).not.toHaveProperty("quoteToken");
+  });
+});
+
+describe("replyMessages", () => {
+  test("a short answer is one text message quoting the user's message", () => {
+    expect(replyMessages("halo", "q")).toEqual([{ type: "text", text: "halo", quoteToken: "q" }]);
+  });
+  test("a split answer quotes only in the first message", () => {
+    const messages = replyMessages("a".repeat(12_000), "q");
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toHaveProperty("quoteToken", "q");
+    expect(messages[1]).not.toHaveProperty("quoteToken");
+    expect(messages[2]).not.toHaveProperty("quoteToken");
+  });
+  test("without a quote token no message has one", () => {
+    expect(replyMessages("halo")).toEqual([{ type: "text", text: "halo" }]);
+    expect(replyMessages("halo")[0]).not.toHaveProperty("quoteToken");
   });
 });

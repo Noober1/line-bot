@@ -1,8 +1,19 @@
 import { Database } from "bun:sqlite";
-import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { webhook } from "@line/bot-sdk";
-import { translatePrompt } from "./commands";
-import { AI_HISTORY_LIMIT, handleEvents, type Languages } from "./events";
+import type { Access } from "./access-commands";
+import { filterDms } from "./allowlist";
+import { createAutoTranslateStore, type AutoTranslateStore } from "./auto-translate";
+import { autoTranslatePrompt, translatePrompt } from "./commands";
+import { createDedupe } from "./dedupe";
+import { buildChatPrompts, DEFAULT_PERSONA, type ChatPrompts } from "./persona";
+import { AI_HISTORY_LIMIT, handleEvents as handle, NOT_PERMITTED_NOTICE_MS, type Languages } from "./events";
+import { createGroupStore, type GroupStore } from "./groups";
+import type { ReplyExtras } from "./flex";
+import { captureLog, configureLog } from "./log";
+import type { Mentions } from "./mentions";
+import type { RateLimit } from "./ratelimit";
+import { MESSAGES } from "./messages";
 import { createSessionStore, type SessionStore, type StoredMessage } from "./session";
 import { createSettingsStore, type SettingsStore } from "./settings";
 
@@ -13,9 +24,16 @@ const GROUP_C1: webhook.Source = { type: "group", groupId: "C1", userId: "U1" };
 const ROOM_R1: webhook.Source = { type: "room", roomId: "R1", userId: "U1" };
 // "@Elysia" (7 chars) at the start of the text, as LINE sends a mention of the bot.
 const BOT_MENTION: webhook.Mention = { mentionees: [{ type: "user", index: 0, length: 7, userId: "Ubot", isSelf: true }] };
+const DEFAULT_PROMPTS = buildChatPrompts(DEFAULT_PERSONA);
 const ELYSIA_USAGE_ID = "Pakai: /elysia <pesan>. Di grup, bisa juga mention bot lalu tulis pesannya.";
 
-function textEvent(text: string, replyToken?: string, source?: webhook.Source, mention?: webhook.Mention): webhook.Event {
+// U1 is the owner (see the Access in the tests below), C1 and C9 are allowed groups.
+function textEvent(
+  text: string,
+  replyToken?: string,
+  source: webhook.Source | undefined = USER_U1,
+  mention?: webhook.Mention,
+): webhook.Event {
   return {
     type: "message",
     replyToken,
@@ -25,7 +43,7 @@ function textEvent(text: string, replyToken?: string, source?: webhook.Source, m
 }
 
 function okReply() {
-  return mock(async (_replyToken: string, _text: string) => {});
+  return mock(async (_replyToken: string, _text: string, _quoteToken?: string, _mentions?: Mentions, _extras?: ReplyExtras) => {});
 }
 
 // Answers "re: <text of the newest message>", so each test can tell which message was answered.
@@ -43,13 +61,42 @@ describe("handleEvents", () => {
   const errorSpy = spyOn(console, "error").mockImplementation(() => {});
   let sessions: SessionStore;
   let settings: SettingsStore;
+  let groups: GroupStore;
+  let access: Access;
+  let autoTranslate: AutoTranslateStore;
+  let clock = 0;
 
   beforeEach(() => {
     errorSpy.mockClear();
+    clock = 0;
     const db = new Database(":memory:");
     sessions = createSessionStore(db);
     settings = createSettingsStore(db, { translate: "en" });
+    groups = createGroupStore(db, () => clock);
+    autoTranslate = createAutoTranslateStore(db);
+    access = {
+      groups,
+      groupSettings: createSettingsStore(db, { translate: "en" }, "group_settings"),
+      ownerUserId: "U1",
+      maxGroupsPerUser: 3,
+      groupName: async (groupId) => `nama ${groupId}`,
+    };
+    // C1 and C9 are allowed, with U7 as admin.
+    for (const groupId of ["C1", "C9"]) groups.approve(groups.request(groupId, "U7").id);
   });
+
+  function handleEvents(
+    events: webhook.Event[],
+    reply: Parameters<typeof handle>[1],
+    sessionStore: SessionStore,
+    ai: Parameters<typeof handle>[3],
+    settingsStore: SettingsStore,
+    languages: Languages = ID_LANGUAGES,
+    rateLimit: RateLimit = () => "allow",
+    prompts?: ChatPrompts,
+  ) {
+    return handle(events, reply, sessionStore, ai, settingsStore, languages, rateLimit, access, autoTranslate, undefined, prompts);
+  }
 
   afterAll(() => {
     errorSpy.mockRestore();
@@ -59,15 +106,265 @@ describe("handleEvents", () => {
     const reply = okReply();
     await handleEvents([textEvent("hello", "rt-1")], reply, sessions, echoAi(), settings);
     expect(reply).toHaveBeenCalledTimes(1);
-    expect(reply).toHaveBeenCalledWith("rt-1", "re: hello");
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: hello", "q");
+  });
+
+  describe("images", () => {
+    const PNG = { mime: "image/png", base64: "iVBORw0KGgo=" };
+    const PROMPT = MESSAGES.id.imagePrompt;
+    const okImage = () => mock(async (_id: string) => PNG);
+    const failingImage = () =>
+      mock(async (_id: string): Promise<typeof PNG> => {
+        throw new Error("download down");
+      });
+    function imageEvent(source: webhook.Source = USER_U1, provider: "line" | "external" = "line"): webhook.Event {
+      return {
+        type: "message",
+        replyToken: "rt-1",
+        source,
+        message: { type: "image", id: "100", quoteToken: "q", contentProvider: { type: provider } },
+      } as webhook.Event;
+    }
+    const imageAi = () => mock(async (messages: readonly StoredMessage[], _system?: string, _image?: unknown) => `re: ${messages.at(-1)?.content}`);
+    function run(
+      events: webhook.Event[],
+      fetchImage: Parameters<typeof handle>[11],
+      { reply = okReply(), ai = imageAi(), rateLimit = (() => "allow") as RateLimit, showLoading = undefined as Parameters<typeof handle>[9] } = {},
+    ) {
+      return handle(events, reply, sessions, ai, settings, ID_LANGUAGES, rateLimit, access, autoTranslate, showLoading, undefined, fetchImage);
+    }
+
+    test("an owner's image in a 1:1 chat goes to the AI with the localized prompt and is answered quoted", async () => {
+      const reply = okReply();
+      const ai = imageAi();
+      const fetchImage = okImage();
+      await run([imageEvent()], fetchImage, { reply, ai });
+      expect(fetchImage).toHaveBeenCalledWith("100");
+      expect(ai).toHaveBeenCalledWith([{ role: "user", content: PROMPT }], DEFAULT_PROMPTS.dm, PNG);
+      expect(reply).toHaveBeenCalledWith("rt-1", `re: ${PROMPT}`, "q");
+    });
+
+    test("the history keeps a placeholder and the answer, never the image", async () => {
+      await run([imageEvent()], okImage());
+      const stored = sessions.recent("U1", 10);
+      expect(stored).toEqual([
+        { role: "user", content: `[image] ${PROMPT}` },
+        { role: "assistant", content: `re: ${PROMPT}` },
+      ]);
+      expect(JSON.stringify(stored)).not.toContain("iVBOR");
+    });
+
+    test("earlier chat goes with the image", async () => {
+      await run([textEvent("apa merek mobil ini?", "rt-0")], okImage());
+      const ai = imageAi();
+      await run([imageEvent()], okImage(), { ai });
+      expect(ai.mock.calls[0]![0][0]).toEqual({ role: "user", content: "apa merek mobil ini?" });
+    });
+
+    test("an image in a group is ignored before the gate and the rate limit", async () => {
+      const reply = okReply();
+      const ai = imageAi();
+      const fetchImage = okImage();
+      const rateLimit = mock(() => "allow" as const);
+      await run([imageEvent({ type: "group", groupId: "C5", userId: "U2" })], fetchImage, { reply, ai, rateLimit });
+      expect(reply).not.toHaveBeenCalled();
+      expect(ai).not.toHaveBeenCalled();
+      expect(fetchImage).not.toHaveBeenCalled();
+      expect(rateLimit).not.toHaveBeenCalled();
+      expect(groups.get("C5")).toBeNull();
+    });
+
+    test("a non-owner's image in a 1:1 chat gets dmGroupsOnly and is not downloaded", async () => {
+      const reply = okReply();
+      const fetchImage = okImage();
+      await run([imageEvent(USER_U2)], fetchImage, { reply });
+      expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.dmGroupsOnly, "q");
+      expect(fetchImage).not.toHaveBeenCalled();
+    });
+
+    test("an external image is never fetched", async () => {
+      const reply = okReply();
+      const fetchImage = okImage();
+      await run([imageEvent(USER_U1, "external")], fetchImage, { reply });
+      expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.imageFailed, "q");
+      expect(fetchImage).not.toHaveBeenCalled();
+    });
+
+    test("a failed download replies imageFailed, calls no AI and saves nothing", async () => {
+      const reply = okReply();
+      const ai = imageAi();
+      await run([imageEvent()], failingImage(), { reply, ai });
+      expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.imageFailed, "q");
+      expect(ai).not.toHaveBeenCalled();
+      expect(sessions.recent("U1", 10)).toEqual([]);
+    });
+
+    test("an AI failure replies aiFailed and a timeout aiTimeout, nothing saved", async () => {
+      const reply = okReply();
+      await run([imageEvent()], okImage(), { reply, ai: failingAi() });
+      expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.aiFailed, "q");
+      const timeoutReply = okReply();
+      const timingOut = mock(async (_m: readonly StoredMessage[], _s?: string, _i?: unknown): Promise<string> => {
+        throw Object.assign(new Error("t"), { name: "TimeoutError" });
+      });
+      await run([imageEvent()], okImage(), { reply: timeoutReply, ai: timingOut });
+      expect(timeoutReply).toHaveBeenCalledWith("rt-1", MESSAGES.id.aiTimeout, "q");
+      expect(sessions.recent("U1", 10)).toEqual([]);
+    });
+
+    test("the rate limit runs before the download", async () => {
+      const reply = okReply();
+      const fetchImage = okImage();
+      await run([imageEvent()], fetchImage, { reply, rateLimit: () => "notify" });
+      expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.rateLimited, "q");
+      expect(fetchImage).not.toHaveBeenCalled();
+      const quiet = okReply();
+      await run([imageEvent()], fetchImage, { reply: quiet, rateLimit: () => "drop" });
+      expect(quiet).not.toHaveBeenCalled();
+      expect(fetchImage).not.toHaveBeenCalled();
+    });
+
+    test("the loading animation starts for an image", async () => {
+      const showLoading = mock(async (_userId: string) => {});
+      await run([imageEvent()], okImage(), { showLoading });
+      expect(showLoading).toHaveBeenCalledWith("U1");
+    });
+
+    test("without a fetchImage an image is ignored", async () => {
+      const reply = okReply();
+      await run([imageEvent()], undefined, { reply });
+      expect(reply).not.toHaveBeenCalled();
+    });
+
+    test("the image bytes never reach the log; size and type do", async () => {
+      const out = captureLog("debug");
+      try {
+        await run([imageEvent()], okImage());
+        const text = out.lines.join("\n");
+        expect(text).not.toContain("iVBORw0KGgo");
+        expect(text).toContain("ai image");
+        expect(text).toContain("mime=image/png");
+      } finally {
+        out.restore();
+      }
+    });
+  });
+
+  describe("logging", () => {
+    const withId = (event: webhook.Event, id: string) => ({ ...event, webhookEventId: id }) as webhook.Event;
+    let out: ReturnType<typeof captureLog>;
+
+    beforeEach(() => {
+      out = captureLog("debug");
+    });
+    afterEach(() => {
+      out.restore();
+    });
+
+    test("one event logs event, decision, ai, reply and done in order, all with the same short event ID", async () => {
+      out.restore();
+      out = captureLog("info");
+      await handleEvents([withId(textEvent("halo", "rt-1"), "01ABCDEFGHIJKLMN")], okReply(), sessions, echoAi(), settings);
+      const messages = out.lines.map((line) => line.replace(/^\S+ \S+\s+\[\w+\] /, ""));
+      expect(messages.map((line) => line.split(" ev=")[0])).toEqual([
+        "event",
+        "ai chat",
+        "ai answered",
+        "reply sent",
+        expect.stringMatching(/^done/),
+      ]);
+      expect(out.lines.every((line) => line.includes("ev=01ABCDEF") && !line.includes("01ABCDEFG"))).toBe(true);
+    });
+
+    test("message text and the AI answer appear only at debug level, cut short", async () => {
+      const text = `rahasia ${"x".repeat(300)}`;
+      await handleEvents([textEvent(text, "rt-1")], okReply(), sessions, echoAi(), settings);
+      expect(out.lines.filter((line) => line.includes("rahasia")).every((line) => line.includes("DEBUG"))).toBe(true);
+      expect(out.lines.some((line) => line.includes("x".repeat(201)))).toBe(false);
+      out.restore();
+      out = captureLog("info");
+      await handleEvents([textEvent(text, "rt-2")], okReply(), sessions, echoAi(), settings);
+      expect(out.lines.join("\n")).not.toContain("rahasia");
+      expect(out.lines.join("\n")).toContain("chars=");
+    });
+
+    test("the reply line has the length, parts, quote and duration, never the text", async () => {
+      await handleEvents([textEvent("halo", "rt-1")], okReply(), sessions, echoAi(), settings);
+      const line = out.lines.find((l) => l.includes("reply sent"))!;
+      expect(line).toMatch(/parts=1 chars=8 quote=true mentions=0 ms=\d+/);
+      expect(line).not.toContain("re: halo");
+    });
+
+    test("every way an event is ignored says why", async () => {
+      await handleEvents([plainGroup("ngobrol biasa")], okReply(), sessions, echoAi(), settings);
+      expect(out.lines.join("\n")).toContain("ignored: plain group chat");
+      out.lines.length = 0;
+      await handleEvents([textEvent("halo", "rt-1", USER_U2)], okReply(), sessions, echoAi(), settings);
+      expect(out.lines.join("\n")).toContain("ignored: DM from a non-owner");
+      out.lines.length = 0;
+      const pendingGroup = { type: "group", groupId: "C5", userId: "U2" } as webhook.Source;
+      await handleEvents([textEvent("/ping", "rt-2", pendingGroup)], okReply(), sessions, echoAi(), settings);
+      await handleEvents([textEvent("/ping", "rt-3", pendingGroup)], okReply(), sessions, echoAi(), settings);
+      expect(out.lines.join("\n")).toContain("group not allowed: sending the notice");
+      expect(out.lines.join("\n")).toContain("ignored: group not allowed");
+      out.lines.length = 0;
+      await handleEvents([textEvent("halo", "rt-4")], okReply(), sessions, echoAi(), settings, ID_LANGUAGES, () => "notify");
+      expect(out.lines.join("\n")).toContain("rate limited: sending the notice");
+    });
+
+    function plainGroup(text: string) {
+      return textEvent(text, "rt-g", { type: "group", groupId: "C1", userId: "U2" } as webhook.Source);
+    }
+
+    test("a failing AI is logged as a warning and the chat as an error, without throwing", async () => {
+      await handleEvents([textEvent("halo", "rt-1")], okReply(), sessions, failingAi(), settings);
+      expect(out.lines.some((line) => line.includes("WARN") && line.includes("ai failed") && line.includes("err="))).toBe(true);
+      expect(out.lines.some((line) => line.includes("ERROR") && line.includes("ai chat failed"))).toBe(true);
+      expect(out.lines.at(-1)).toContain("done");
+    });
+
+    test("an error thrown outside the AI call is logged as event failed", async () => {
+      const broken = { ...access, groups: { ...access.groups, request: () => { throw new Error("db gone"); } } } as Access;
+      const group = { type: "group", groupId: "C5", userId: "U2" } as webhook.Source;
+      await handle([textEvent("/ping", "rt-1", group)], okReply(), sessions, echoAi(), settings, ID_LANGUAGES, () => "allow", broken, autoTranslate);
+      expect(out.lines.some((line) => line.includes("ERROR") && line.includes("event failed") && line.includes("db gone"))).toBe(true);
+    });
+
+    test("a failing reply is logged and does not stop the other events", async () => {
+      const reply = mock(async (token: string) => {
+        if (token === "rt-1") throw new Error("reply down");
+      });
+      await handleEvents([textEvent("a", "rt-1"), textEvent("b", "rt-2")], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledTimes(2);
+      expect(out.lines.some((line) => line.includes("reply failed") && line.includes("reply down"))).toBe(true);
+    });
+
+    test("a secret inside an error message never reaches the log", async () => {
+      configureLog({ secrets: ["sk-test-1234567890"] });
+      const leaking = mock(async (): Promise<string> => {
+        throw new Error("AI request failed: Bearer sk-test-1234567890");
+      });
+      await handleEvents([textEvent("halo", "rt-1")], okReply(), sessions, leaking, settings);
+      expect(out.lines.join("\n")).not.toContain("sk-test-1234567890");
+      expect(out.lines.join("\n")).toContain("Bearer ***");
+    });
+
+    test("IDs are shortened to 8 characters below debug level", async () => {
+      out.restore();
+      out = captureLog("info");
+      const longGroup = { type: "group", groupId: "Cabcdef0123456789", userId: "U2" } as webhook.Source;
+      await handleEvents([textEvent("/ping", "rt-1", longGroup)], okReply(), sessions, echoAi(), settings);
+      expect(out.lines.join("\n")).toContain("Cabcdef0");
+      expect(out.lines.join("\n")).not.toContain("Cabcdef01");
+    });
   });
 
   test("answers every text message in one batch", async () => {
     const reply = okReply();
     await handleEvents([textEvent("a", "rt-a"), textEvent("b", "rt-b")], reply, sessions, echoAi(), settings);
     expect(reply).toHaveBeenCalledTimes(2);
-    expect(reply).toHaveBeenCalledWith("rt-a", "re: a");
-    expect(reply).toHaveBeenCalledWith("rt-b", "re: b");
+    expect(reply).toHaveBeenCalledWith("rt-a", "re: a", "q");
+    expect(reply).toHaveBeenCalledWith("rt-b", "re: b", "q");
   });
 
   test("replies to a command without calling the AI", async () => {
@@ -75,7 +372,7 @@ describe("handleEvents", () => {
     const ai = echoAi();
     await handleEvents([textEvent("/ping", "rt-1")], reply, sessions, ai, settings);
     expect(reply).toHaveBeenCalledTimes(1);
-    expect(reply).toHaveBeenCalledWith("rt-1", "pong");
+    expect(reply).toHaveBeenCalledWith("rt-1", "pong", "q");
     expect(ai).not.toHaveBeenCalled();
   });
 
@@ -85,6 +382,7 @@ describe("handleEvents", () => {
     expect(reply).toHaveBeenCalledWith(
       "rt-1",
       "Perintah /foo tidak dikenal. Ketik /help untuk daftar perintah.",
+      "q",
     );
   });
 
@@ -118,12 +416,19 @@ describe("handleEvents", () => {
     expect(ai).not.toHaveBeenCalled();
   });
 
+  test("a text message without a quote token still gets an unquoted reply", async () => {
+    const reply = okReply();
+    const event = { type: "message", replyToken: "rt-1", source: USER_U1, message: { type: "text", id: "m1", text: "hello" } } as webhook.Event;
+    await handleEvents([event], reply, sessions, echoAi(), settings);
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: hello", undefined);
+  });
+
   test("a failed reply is logged and does not stop other replies", async () => {
     const reply = mock(async (replyToken: string, _text: string) => {
       if (replyToken === "rt-bad") throw new Error("boom");
     });
     await handleEvents([textEvent("x", "rt-bad"), textEvent("y", "rt-ok")], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-ok", "re: y");
+    expect(reply).toHaveBeenCalledWith("rt-ok", "re: y", "q");
     expect(errorSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -163,7 +468,7 @@ describe("handleEvents", () => {
     sessions.append("U2", "user", "punya U2");
     const reply = okReply();
     await handleEvents([textEvent("/reset", "rt-1", USER_U1)], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "Riwayat chat sudah dihapus.");
+    expect(reply).toHaveBeenCalledWith("rt-1", "✅ Riwayat obrolan di sini sudah dihapus. Percakapan dimulai dari awal.", "q");
     expect(sessions.recent("U1", 10)).toEqual([]);
     expect(sessions.recent("U2", 10)).toEqual([{ role: "user", content: "punya U2" }]);
   });
@@ -182,11 +487,14 @@ describe("handleEvents", () => {
     sessions.append("U2", "user", "punya U2");
     const ai = echoAi();
     await handleEvents([textEvent("apa kabar?", "rt-1", USER_U1)], okReply(), sessions, ai, settings);
-    expect(ai).toHaveBeenCalledWith([
-      { role: "user", content: "halo" },
-      { role: "assistant", content: "hai" },
-      { role: "user", content: "apa kabar?" },
-    ]);
+    expect(ai).toHaveBeenCalledWith(
+      [
+        { role: "user", content: "halo" },
+        { role: "assistant", content: "hai" },
+        { role: "user", content: "apa kabar?" },
+      ],
+      DEFAULT_PROMPTS.dm,
+    );
   });
 
   test("sends only the newest AI_HISTORY_LIMIT stored messages", async () => {
@@ -216,14 +524,17 @@ describe("handleEvents", () => {
     const ai = echoAi();
     await handleEvents([textEvent("@Elysia dari U1", "rt-1", group, BOT_MENTION)], okReply(), sessions, ai, settings);
     await handleEvents([textEvent("@Elysia dari U2", "rt-2", { ...group, userId: "U2" }, BOT_MENTION)], okReply(), sessions, ai, settings);
-    expect(ai).toHaveBeenLastCalledWith([
-      { role: "user", content: "dari U1" },
-      { role: "assistant", content: "re: dari U1" },
-      { role: "user", content: "dari U2" },
-    ]);
+    expect(ai).toHaveBeenLastCalledWith(
+      [
+        { role: "user", content: "dari U1" },
+        { role: "assistant", content: "re: dari U1" },
+        { role: "user", content: "dari U2" },
+      ],
+      DEFAULT_PROMPTS.group,
+    );
   });
 
-  test("group, other group, room and 1:1 histories never leak into each other", async () => {
+  test("group, other group and 1:1 histories never leak into each other; a room is ignored", async () => {
     sessions.append("C1", "user", "rahasia grup 1");
     sessions.append("C2", "user", "rahasia grup 2");
     sessions.append("R1", "user", "rahasia room");
@@ -237,36 +548,157 @@ describe("handleEvents", () => {
     await handleEvents(events, okReply(), sessions, ai, settings);
     const sent = ai.mock.calls.map(([messages]) => messages.map((message) => message.content));
     expect(sent).toContainEqual(["rahasia grup 1", "tanya"]);
-    expect(sent).toContainEqual(["rahasia room", "tanya"]);
     expect(sent).toContainEqual(["rahasia pribadi", "tanya"]);
-    expect(sent).toHaveLength(3);
+    expect(sent).toHaveLength(2);
   });
 
-  test("a message without a usable source is answered without history", async () => {
+  test("an event without a source, or a 1:1 source without user ID, is ignored", async () => {
     const reply = okReply();
     const ai = echoAi();
-    await handleEvents([textEvent("halo", "rt-1")], reply, sessions, ai, settings);
-    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "halo" }]);
-    expect(reply).toHaveBeenCalledWith("rt-1", "re: halo");
+    const noUser = { type: "user" } as webhook.Source;
+    const noSource = { type: "message", replyToken: "rt-1", message: { type: "text", id: "m1", text: "halo", quoteToken: "q" } } as webhook.Event;
+    await handleEvents([noSource, textEvent("halo", "rt-2", noUser)], reply, sessions, ai, settings);
+    expect(reply).not.toHaveBeenCalled();
+    expect(ai).not.toHaveBeenCalled();
   });
 
-  test("an AI failure is logged, sends no reply, saves nothing, and does not stop other events", async () => {
+  test("an AI failure is logged, tells the user, saves nothing, and does not stop other events", async () => {
     const reply = okReply();
     const ai = mock(async (messages: readonly StoredMessage[]) => {
       if (messages.at(-1)?.content === "rusak") throw new Error("ai down");
       return "oke";
     });
     await handleEvents(
-      [textEvent("rusak", "rt-bad", USER_U1), textEvent("sehat", "rt-ok", USER_U2)],
+      [
+        textEvent("rusak", "rt-bad", USER_U1),
+        textEvent("@Elysia sehat", "rt-ok", { type: "group", groupId: "C1", userId: "U2" }, BOT_MENTION),
+      ],
       reply,
       sessions,
       ai,
       settings,
     );
-    expect(reply).toHaveBeenCalledTimes(1);
-    expect(reply).toHaveBeenCalledWith("rt-ok", "oke");
+    expect(reply).toHaveBeenCalledTimes(2);
+    expect(reply).toHaveBeenCalledWith("rt-bad", MESSAGES.id.aiFailed, "q");
+    expect(reply).toHaveBeenCalledWith("rt-ok", "oke", "q");
     expect(errorSpy).toHaveBeenCalledTimes(1);
     expect(sessions.recent("U1", 10)).toEqual([]);
+  });
+
+  test("an AI timeout gets its own friendly text, in the sender's language", async () => {
+    const reply = okReply();
+    const timeout = mock(async (): Promise<string> => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
+    const english: Languages = { lineLanguage: async () => "en", defaultLocale: "id" };
+    await handleEvents([textEvent("halo", "rt-1", USER_U1)], reply, sessions, timeout, settings, english);
+    expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.en.aiTimeout, "q");
+  });
+
+  test("a group mention that hits an AI failure is answered with the friendly text too", async () => {
+    const reply = okReply();
+    await handleEvents(
+      [textEvent("@Elysia halo", "rt-1", { type: "group", groupId: "C1", userId: "U2" }, BOT_MENTION)],
+      reply,
+      sessions,
+      failingAi(),
+      settings,
+    );
+    expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.aiFailed, "q");
+  });
+
+  describe("cards and quick replies", () => {
+    const GROUP_U2 = { type: "group", groupId: "C1", userId: "U2" } as webhook.Source;
+
+    test("/help in a 1:1 chat is sent as a card, in a group as plain quoted text", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent("/help", "rt-1", USER_U1), textEvent("/help", "rt-2", GROUP_U2)], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", expect.stringContaining("/help"), "q", undefined, { flex: "card" });
+      expect(reply).toHaveBeenCalledWith("rt-2", expect.stringContaining("/help"), "q");
+    });
+
+    test("/config without arguments is a card with the translate languages as buttons, in the sender's language", async () => {
+      const reply = okReply();
+      const english: Languages = { lineLanguage: async () => "en", defaultLocale: "id" };
+      await handleEvents([textEvent("/config", "rt-1", USER_U1)], reply, sessions, echoAi(), settings, english);
+      const extras = reply.mock.calls[0]![4] as { flex: string; quickReplies: { label: string; text: string }[] };
+      expect(extras.flex).toBe("card");
+      expect(extras.quickReplies.map((option) => option.text)).toContain("/config translate ja");
+      expect(extras.quickReplies.at(-1)).toEqual({ label: MESSAGES.en.resetLabel, text: "/config translate reset" });
+    });
+
+    test("/config with arguments (a change) stays a plain text", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent("/config translate ja", "rt-1", USER_U1)], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", "translate diubah ke ja.", "q");
+    });
+
+    // An empty list is a one-line text: replyMessages turns it back into plain text (see split.test.ts).
+    test("/groups in a 1:1 chat asks for a card, in a group it is the unknown command", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent("/groups", "rt-1", USER_U1)], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", expect.stringContaining("#"), "q", undefined, { flex: "card" });
+      await handleEvents([textEvent("/groups", "rt-2", GROUP_U2)], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-2", expect.stringContaining("tidak dikenal"), "q");
+    });
+
+    test("a long AI answer in a 1:1 chat is a card, a short one is plain text", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent("a".repeat(700), "rt-1", USER_U1), textEvent("pendek", "rt-2", USER_U1)], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", `re: ${"a".repeat(700)}`, "q", undefined, { flex: "answer" });
+      expect(reply).toHaveBeenCalledWith("rt-2", "re: pendek", "q");
+    });
+
+    test("a long AI answer in a group stays quoted text", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent(`@Elysia ${"a".repeat(700)}`, "rt-1", GROUP_U2, BOT_MENTION)], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", `re: ${"a".repeat(700)}`, "q");
+    });
+  });
+
+  describe("loading animation", () => {
+    const loading = () => mock(async (_userId: string) => {});
+    const run = (events: webhook.Event[], showLoading: Parameters<typeof handle>[9], ai = echoAi()) =>
+      handle(events, okReply(), sessions, ai, settings, ID_LANGUAGES, () => "allow", access, autoTranslate, showLoading);
+
+    test("starts for an AI chat in a 1:1 chat, before the answer", async () => {
+      const showLoading = loading();
+      await run([textEvent("halo", "rt-1", USER_U1)], showLoading);
+      expect(showLoading).toHaveBeenCalledTimes(1);
+      expect(showLoading).toHaveBeenCalledWith("U1");
+    });
+
+    test("starts for /translate in a 1:1 chat, but not for a command that needs no AI", async () => {
+      const showLoading = loading();
+      await run([textEvent("/ping", "rt-1", USER_U1)], showLoading);
+      expect(showLoading).not.toHaveBeenCalled();
+      await run([textEvent("/translate halo", "rt-2", USER_U1)], showLoading);
+      expect(showLoading).toHaveBeenCalledTimes(1);
+    });
+
+    test("never starts in a group, where LINE has no loading animation", async () => {
+      const showLoading = loading();
+      await run([textEvent("@Elysia halo", "rt-1", { type: "group", groupId: "C1", userId: "U2" }, BOT_MENTION)], showLoading);
+      expect(showLoading).not.toHaveBeenCalled();
+    });
+
+    test("a failing animation is logged and does not cost the user the answer", async () => {
+      const out = captureLog("info");
+      const reply = okReply();
+      const failing = mock(async (_userId: string) => {
+        throw new Error("LINE said no");
+      });
+      await handle([textEvent("halo", "rt-1", USER_U1)], reply, sessions, echoAi(), settings, ID_LANGUAGES, () => "allow", access, autoTranslate, failing);
+      out.restore();
+      expect(reply).toHaveBeenCalledWith("rt-1", "re: halo", "q");
+      expect(out.lines.some((line) => line.includes("loading animation failed") && line.includes("LINE said no"))).toBe(true);
+    });
+
+    test("without a showLoading function nothing happens", async () => {
+      const reply = okReply();
+      await run([textEvent("halo", "rt-1", USER_U1)], undefined);
+      expect(reply).not.toHaveBeenCalled();
+    });
   });
 
   test("never rejects when the AI fails", async () => {
@@ -278,11 +710,11 @@ describe("handleEvents", () => {
   test("/config in a 1:1 chat changes the sender's settings", async () => {
     const reply = okReply();
     await handleEvents([textEvent("/config translate ja", "rt-1", USER_U1)], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "translate diubah ke ja.");
+    expect(reply).toHaveBeenCalledWith("rt-1", "translate diubah ke ja.", "q");
     expect(settings.stored("U1")).toEqual({ translate: "ja" });
   });
 
-  const CONFIG_IN_GROUP_ID = "Ganti pengaturan lewat chat pribadi (DM) dengan bot aja, jangan di grup.";
+  const CONFIG_IN_GROUP_ID = MESSAGES.id.configInGroup;
 
   test("/config in a group is refused with the DM hint, settings are neither read nor changed", async () => {
     settings.set("U1", "translate", "ja");
@@ -292,22 +724,18 @@ describe("handleEvents", () => {
       [textEvent("/config translate ko", "rt-1", GROUP_C1), textEvent("/config", "rt-2", GROUP_C1)],
       reply, sessions, ai, settings,
     );
-    expect(reply).toHaveBeenCalledWith("rt-1", CONFIG_IN_GROUP_ID);
-    expect(reply).toHaveBeenCalledWith("rt-2", CONFIG_IN_GROUP_ID);
+    expect(reply).toHaveBeenCalledWith("rt-1", CONFIG_IN_GROUP_ID, "q");
+    expect(reply).toHaveBeenCalledWith("rt-2", CONFIG_IN_GROUP_ID, "q");
     expect(settings.stored("U1")).toEqual({ translate: "ja" });
     expect(settings.stored("C1")).toEqual({});
     expect(ai).not.toHaveBeenCalled();
   });
 
-  test("/config in a room or from a group member without a user ID is refused the same way", async () => {
+  test("/config from a group member without a user ID is refused the same way", async () => {
     const reply = okReply();
     const noId = { type: "group", groupId: "C1" } as webhook.Source;
-    await handleEvents(
-      [textEvent("/CONFIG translate ja", "rt-1", ROOM_R1), textEvent("/config translate ja", "rt-2", noId)],
-      reply, sessions, echoAi(), settings,
-    );
-    expect(reply).toHaveBeenCalledWith("rt-1", CONFIG_IN_GROUP_ID);
-    expect(reply).toHaveBeenCalledWith("rt-2", CONFIG_IN_GROUP_ID);
+    await handleEvents([textEvent("/config translate ja", "rt-2", noId)], reply, sessions, echoAi(), settings);
+    expect(reply).toHaveBeenCalledWith("rt-2", CONFIG_IN_GROUP_ID, "q");
     expect(settings.stored("U1")).toEqual({});
   });
 
@@ -317,7 +745,7 @@ describe("handleEvents", () => {
       lineLanguage: async () => "ja",
       defaultLocale: "id",
     });
-    expect(reply).toHaveBeenCalledWith("rt-1", "設定の変更はグループではなく、ボットとの個別チャットで行ってください。");
+    expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.ja.configInGroup, "q");
   });
 
   test("/config in a 1:1 chat still lists settings", async () => {
@@ -333,7 +761,7 @@ describe("handleEvents", () => {
     const reply = okReply();
     const ai = echoAi();
     await handleEvents([textEvent("/translate halo", "rt-1", USER_U1)], reply, sessions, ai, settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "re: halo");
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: halo", "q");
     expect(ai).toHaveBeenCalledWith([{ role: "user", content: "halo" }], translatePrompt("en"));
     expect(sessions.recent("U1", 10)).toEqual([
       { role: "user", content: "lama" },
@@ -359,7 +787,7 @@ describe("handleEvents", () => {
   test("/translate still replies when the AI fails", async () => {
     const reply = okReply();
     await handleEvents([textEvent("/translate halo", "rt-1", USER_U1)], reply, sessions, failingAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "Gagal menerjemahkan. Coba lagi nanti.");
+    expect(reply).toHaveBeenCalledWith("rt-1", "Gagal menerjemahkan. Coba lagi nanti.", "q");
   });
 
   test("a command is answered in the sender's LINE language", async () => {
@@ -370,7 +798,7 @@ describe("handleEvents", () => {
       defaultLocale: "id",
     });
     expect(lineLanguage).toHaveBeenCalledWith("U1");
-    expect(reply).toHaveBeenCalledWith("rt-1", "チャット履歴を削除しました。");
+    expect(reply).toHaveBeenCalledWith("rt-1", "✅ このチャットの履歴を削除しました。最初から始めます。", "q");
   });
 
   test("a group command uses the sender's LINE language", async () => {
@@ -382,7 +810,7 @@ describe("handleEvents", () => {
       defaultLocale: "id",
     });
     expect(lineLanguage).toHaveBeenCalledWith("U1");
-    expect(reply).toHaveBeenCalledWith("rt-1", "聊天記錄已清除。");
+    expect(reply).toHaveBeenCalledWith("rt-1", "✅ 此處的聊天記錄已清除，我們從頭開始。", "q");
   });
 
   test("an unknown or unsupported LINE language falls back to the default locale", async () => {
@@ -392,7 +820,7 @@ describe("handleEvents", () => {
         lineLanguage: async () => language,
         defaultLocale: "en",
       });
-      expect(reply).toHaveBeenCalledWith("rt-1", "Chat history cleared.");
+      expect(reply).toHaveBeenCalledWith("rt-1", "✅ The chat history here is cleared. We're starting fresh.", "q");
     }
   });
 
@@ -414,7 +842,7 @@ describe("handleEvents", () => {
       defaultLocale: "en",
     });
     expect(lineLanguage).not.toHaveBeenCalled();
-    expect(reply).toHaveBeenCalledWith("rt-1", "Chat history cleared.");
+    expect(reply).toHaveBeenCalledWith("rt-1", "✅ The chat history here is cleared. We're starting fresh.", "q");
   });
 
   test("AI chat does not fetch the LINE language", async () => {
@@ -431,7 +859,7 @@ describe("handleEvents", () => {
     const ai = echoAi();
     const rateLimit = mock((_key: string) => "notify" as const);
     await handleEvents([textEvent("halo", "rt-1", USER_U1)], reply, sessions, ai, settings, ID_LANGUAGES, rateLimit);
-    expect(reply).toHaveBeenCalledWith("rt-1", "Pesannya terlalu banyak. Tunggu sebentar lalu coba lagi.");
+    expect(reply).toHaveBeenCalledWith("rt-1", "Pesannya terlalu banyak. Tunggu sebentar lalu coba lagi.", "q");
     expect(ai).not.toHaveBeenCalled();
     expect(sessions.recent("U1", 10)).toEqual([]);
   });
@@ -462,15 +890,15 @@ describe("handleEvents", () => {
     const reply = okReply();
     await handleEvents([textEvent("halo", "rt-1", USER_U1)], reply, sessions, echoAi(), settings,
       { lineLanguage: async () => "ja", defaultLocale: "id" }, () => "notify");
-    expect(reply).toHaveBeenCalledWith("rt-1", "メッセージが多すぎます。少し待ってからもう一度お試しください。");
+    expect(reply).toHaveBeenCalledWith("rt-1", "メッセージが多すぎます。少し待ってからもう一度お試しください。", "q");
   });
 
   test("in a group a message that mentions the bot goes to the AI without the mention, and is saved so", async () => {
     const reply = okReply();
     const ai = echoAi();
     await handleEvents([textEvent("@Elysia apa kabar?", "rt-1", GROUP_C1, BOT_MENTION)], reply, sessions, ai, settings);
-    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "apa kabar?" }]);
-    expect(reply).toHaveBeenCalledWith("rt-1", "re: apa kabar?");
+    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "apa kabar?" }], DEFAULT_PROMPTS.group);
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: apa kabar?", "q");
     expect(sessions.recent("C1", 10)).toEqual([
       { role: "user", content: "apa kabar?" },
       { role: "assistant", content: "re: apa kabar?" },
@@ -516,10 +944,10 @@ describe("handleEvents", () => {
     expect(ai).not.toHaveBeenCalled();
   });
 
-  test("a mention of the bot in a room is answered", async () => {
+  test("a room message is ignored, even a mention of the bot", async () => {
     const reply = okReply();
     await handleEvents([textEvent("@Elysia halo", "rt-1", ROOM_R1, BOT_MENTION)], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "re: halo");
+    expect(reply).not.toHaveBeenCalled();
   });
 
   test("/elysia <text> in a group goes to the AI with the group's history and is saved", async () => {
@@ -528,12 +956,15 @@ describe("handleEvents", () => {
     const ai = echoAi();
     const reply = okReply();
     await handleEvents([textEvent("/Elysia  apa kabar?", "rt-1", GROUP_C1)], reply, sessions, ai, settings);
-    expect(ai).toHaveBeenCalledWith([
-      { role: "user", content: "lama" },
-      { role: "assistant", content: "jawaban lama" },
-      { role: "user", content: "apa kabar?" },
-    ]);
-    expect(reply).toHaveBeenCalledWith("rt-1", "re: apa kabar?");
+    expect(ai).toHaveBeenCalledWith(
+      [
+        { role: "user", content: "lama" },
+        { role: "assistant", content: "jawaban lama" },
+        { role: "user", content: "apa kabar?" },
+      ],
+      DEFAULT_PROMPTS.group,
+    );
+    expect(reply).toHaveBeenCalledWith("rt-1", "re: apa kabar?", "q");
     expect(sessions.recent("C1", 10).at(-2)).toEqual({ role: "user", content: "apa kabar?" });
   });
 
@@ -544,8 +975,8 @@ describe("handleEvents", () => {
       [textEvent("/elysia   ", "rt-1", GROUP_C1), textEvent("@Elysia ", "rt-2", GROUP_C1, BOT_MENTION)],
       reply, sessions, ai, settings,
     );
-    expect(reply).toHaveBeenCalledWith("rt-1", ELYSIA_USAGE_ID);
-    expect(reply).toHaveBeenCalledWith("rt-2", ELYSIA_USAGE_ID);
+    expect(reply).toHaveBeenCalledWith("rt-1", ELYSIA_USAGE_ID, "q");
+    expect(reply).toHaveBeenCalledWith("rt-2", ELYSIA_USAGE_ID, "q");
     expect(ai).not.toHaveBeenCalled();
     expect(sessions.recent("C1", 10)).toEqual([]);
   });
@@ -554,25 +985,470 @@ describe("handleEvents", () => {
     const reply = okReply();
     await handleEvents([textEvent("/elysia", "rt-1", GROUP_C1)], reply, sessions, echoAi(), settings,
       { lineLanguage: async () => "ja", defaultLocale: "id" });
-    expect(reply).toHaveBeenCalledWith("rt-1", "使い方: /elysia <メッセージ>。グループではボットをメンションしてメッセージを書くこともできます。");
+    expect(reply).toHaveBeenCalledWith("rt-1", "使い方: /elysia <メッセージ>。グループではボットをメンションしてメッセージを書くこともできます。", "q");
   });
 
   test("other commands still work in a group without a mention, /help lists /elysia", async () => {
     const reply = okReply();
     await handleEvents([textEvent("/ping", "rt-1", GROUP_C1), textEvent("/help", "rt-2", GROUP_C1)], reply, sessions, echoAi(), settings);
-    expect(reply).toHaveBeenCalledWith("rt-1", "pong");
+    expect(reply).toHaveBeenCalledWith("rt-1", "pong", "q");
     expect(reply.mock.calls.find(([token]) => token === "rt-2")![1]).toContain("/elysia - ");
   });
 
   test("a 1:1 message still goes straight to the AI, mention data or not", async () => {
     const ai = echoAi();
     await handleEvents([textEvent("@Elysia halo", "rt-1", USER_U1, BOT_MENTION)], okReply(), sessions, ai, settings);
-    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "@Elysia halo" }]);
+    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "@Elysia halo" }], DEFAULT_PROMPTS.dm);
   });
 
   test("/elysia <text> in a 1:1 chat goes to the AI", async () => {
     const ai = echoAi();
     await handleEvents([textEvent("/elysia halo", "rt-1", USER_U1)], okReply(), sessions, ai, settings);
-    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "halo" }]);
+    expect(ai).toHaveBeenCalledWith([{ role: "user", content: "halo" }], DEFAULT_PROMPTS.dm);
+  });
+
+  describe("persona prompts", () => {
+    const custom = buildChatPrompts("Kamu bajak laut");
+
+    test("a custom persona reaches the AI: dm prompt in a 1:1 chat, group prompt in a group", async () => {
+      const ai = echoAi();
+      await handleEvents(
+        [textEvent("halo", "rt-1", USER_U1), textEvent("@Elysia halo", "rt-2", GROUP_C1, BOT_MENTION), textEvent("/elysia halo", "rt-3", GROUP_C1)],
+        okReply(), sessions, ai, settings, ID_LANGUAGES, () => "allow", custom,
+      );
+      expect(ai.mock.calls.map(([, system]) => system)).toEqual([custom.dm, custom.group, custom.group]);
+      expect(custom.dm).toContain("Kamu bajak laut");
+    });
+
+    test("/translate does not use the persona", async () => {
+      const ai = echoAi();
+      await handleEvents([textEvent("/translate halo", "rt-1", USER_U1)], okReply(), sessions, ai, settings, ID_LANGUAGES, () => "allow", custom);
+      expect(ai.mock.calls[0]![1]).toBe(translatePrompt("en"));
+    });
+  });
+
+  describe("group access", () => {
+    const EN: Languages = { lineLanguage: async () => undefined, defaultLocale: "en" };
+    const inGroup = (groupId: string, userId?: string) => ({ type: "group", groupId, userId }) as webhook.Source;
+    const mention = (text: string, token: string, groupId: string, userId?: string) =>
+      textEvent(`@Elysia ${text}`, token, inGroup(groupId, userId), BOT_MENTION);
+    const joinEvent = (groupId: string, token = "rt-join") =>
+      ({ type: "join", replyToken: token, source: { type: "group", groupId } }) as webhook.Event;
+    const leaveEvent = (groupId: string) => ({ type: "leave", source: { type: "group", groupId } }) as webhook.Event;
+    const dm = (text: string, userId: string) => textEvent(text, "rt-dm", { type: "user", userId });
+    const T = MESSAGES.id;
+
+    test("join in a new group creates a pending group and replies with the join notice in the default language", async () => {
+      const reply = okReply();
+      await handleEvents([joinEvent("C5")], reply, sessions, echoAi(), settings, EN);
+      expect(groups.get("C5")).toMatchObject({ status: "pending", requesterId: null });
+      expect(reply).toHaveBeenCalledWith("rt-join", MESSAGES.en.joinNotice);
+      expect(reply.mock.calls[0]![2]).toBeUndefined();
+    });
+
+    test("join in a denied group is silent and the group stays denied", async () => {
+      groups.setStatus(groups.join("C5").id, "denied");
+      const reply = okReply();
+      await handleEvents([joinEvent("C5")], reply, sessions, echoAi(), settings);
+      expect(reply).not.toHaveBeenCalled();
+      expect(groups.get("C5")?.status).toBe("denied");
+    });
+
+    test("join in an allowed group resets it to pending", async () => {
+      await handleEvents([joinEvent("C1")], okReply(), sessions, echoAi(), settings);
+      expect(groups.get("C1")).toMatchObject({ status: "pending", requesterId: null });
+    });
+
+    test("a mention in a pending group records the first requester and answers not-permitted", async () => {
+      groups.join("C5");
+      const reply = okReply();
+      const ai = echoAi();
+      await handleEvents([mention("halo", "rt-1", "C5", "U2")], reply, sessions, ai, settings);
+      const { id } = groups.get("C5")!;
+      expect(reply).toHaveBeenCalledWith("rt-1", T.notPermitted(id), "q");
+      expect(groups.get("C5")?.requesterId).toBe("U2");
+      expect(ai).not.toHaveBeenCalled();
+      clock += NOT_PERMITTED_NOTICE_MS + 1;
+      await handleEvents([mention("halo", "rt-2", "C5", "U3")], reply, sessions, ai, settings);
+      expect(reply).toHaveBeenCalledWith("rt-2", T.notPermitted(id), "q");
+      expect(groups.get("C5")?.requesterId).toBe("U2");
+    });
+
+    test("the not-permitted notice is throttled per group", async () => {
+      groups.join("C5");
+      const reply = okReply();
+      await handleEvents([mention("a", "rt-1", "C5", "U2")], reply, sessions, echoAi(), settings);
+      clock += NOT_PERMITTED_NOTICE_MS / 2;
+      await handleEvents([mention("b", "rt-2", "C5", "U2")], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledTimes(1);
+      clock += NOT_PERMITTED_NOTICE_MS / 2;
+      await handleEvents([mention("c", "rt-3", "C5", "U2")], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledTimes(2);
+    });
+
+    test("a member without a user ID gets unknown-sender; the next user becomes requester", async () => {
+      const reply = okReply();
+      await handleEvents([mention("halo", "rt-1", "C5")], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", T.unknownSender, "q");
+      expect(groups.get("C5")?.requesterId).toBeNull();
+      clock += NOT_PERMITTED_NOTICE_MS + 1;
+      await handleEvents([mention("halo", "rt-2", "C5", "U3")], reply, sessions, echoAi(), settings);
+      expect(groups.get("C5")?.requesterId).toBe("U3");
+    });
+
+    test("a plain message in an unknown group creates nothing and gets no reply", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent("halo semua", "rt-1", inGroup("C5", "U2"))], reply, sessions, echoAi(), settings);
+      expect(reply).not.toHaveBeenCalled();
+      expect(groups.get("C5")).toBeNull();
+    });
+
+    test("a denied group is silent for members and does not use the rate limit; the owner still gets through", async () => {
+      groups.setStatus(groups.request("C5", "U2").id, "denied");
+      const reply = okReply();
+      const ai = echoAi();
+      const rateLimit = mock((_key: string) => "allow" as const);
+      await handleEvents(
+        [mention("halo", "rt-1", "C5", "U2"), textEvent("/ping", "rt-2", inGroup("C5", "U2"))],
+        reply, sessions, ai, settings, ID_LANGUAGES, rateLimit,
+      );
+      expect(reply).not.toHaveBeenCalled();
+      expect(rateLimit).not.toHaveBeenCalled();
+      await handleEvents([mention("halo", "rt-3", "C5", "U1")], reply, sessions, ai, settings);
+      expect(reply).toHaveBeenCalledWith("rt-3", "re: halo", "q");
+    });
+
+    test("any member of an allowed group is answered", async () => {
+      const reply = okReply();
+      await handleEvents([mention("halo", "rt-1", "C1", "U5")], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", "re: halo", "q");
+    });
+
+    test("the owner talking in a pending group allows it and becomes its admin", async () => {
+      groups.request("C5", "U2");
+      const reply = okReply();
+      await handleEvents([mention("halo", "rt-1", "C5", "U1")], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", "re: halo", "q");
+      expect(groups.get("C5")).toMatchObject({ status: "allowed", requesterId: "U1", adminId: "U1" });
+    });
+
+    test("a group the owner spoke in first cannot be taken over by another member", async () => {
+      await handleEvents([mention("halo", "rt-1", "C5", "U1")], okReply(), sessions, echoAi(), settings);
+      const reply = okReply();
+      await handleEvents([mention("halo", "rt-2", "C5", "U2")], reply, sessions, echoAi(), settings);
+      expect(groups.get("C5")).toMatchObject({ status: "allowed", requesterId: "U1", adminId: "U1" });
+      expect(reply).toHaveBeenCalledWith("rt-2", "re: halo", "q");
+    });
+
+    test("the owner does not take over another admin's allowed group or a denied one", async () => {
+      groups.setStatus(groups.request("C5", "U2").id, "denied");
+      await handleEvents([mention("halo", "rt-1", "C1", "U1"), mention("halo", "rt-2", "C5", "U1")], okReply(), sessions, echoAi(), settings);
+      expect(groups.get("C1")).toMatchObject({ status: "allowed", adminId: "U7" });
+      expect(groups.get("C5")).toMatchObject({ status: "denied", adminId: null });
+    });
+
+    test("the access check runs before the rate limit", async () => {
+      groups.join("C5");
+      const rateLimit = mock((_key: string) => "allow" as const);
+      await handleEvents([mention("halo", "rt-1", "C5", "U2")], okReply(), sessions, echoAi(), settings, ID_LANGUAGES, rateLimit);
+      expect(rateLimit).not.toHaveBeenCalled();
+    });
+
+    test("leave marks the group left; joining again makes it pending and keeps the group settings", async () => {
+      access.groupSettings.set("C1", "translate", "ja");
+      await handleEvents([leaveEvent("C1")], okReply(), sessions, echoAi(), settings);
+      expect(groups.get("C1")?.status).toBe("left");
+      await handleEvents([joinEvent("C1")], okReply(), sessions, echoAi(), settings);
+      expect(groups.get("C1")).toMatchObject({ status: "pending", requesterId: null });
+      expect(access.groupSettings.stored("C1")).toEqual({ translate: "ja" });
+    });
+
+    test("a room join or mention is ignored and creates nothing", async () => {
+      const reply = okReply();
+      const roomJoin = { type: "join", replyToken: "rt-1", source: { type: "room", roomId: "R5" } } as webhook.Event;
+      await handleEvents([roomJoin, textEvent("@Elysia halo", "rt-2", ROOM_R1, BOT_MENTION)], reply, sessions, echoAi(), settings);
+      expect(reply).not.toHaveBeenCalled();
+      expect(groups.list().map((group) => group.groupId)).toEqual(["C1", "C9"]);
+    });
+
+    test("the owner can chat with the AI and list groups in a DM", async () => {
+      const reply = okReply();
+      await handleEvents([dm("halo", "U1"), dm("/groups", "U1")], reply, sessions, echoAi(), settings);
+      expect(reply.mock.calls[0]![1]).toBe("re: halo");
+      expect(reply.mock.calls[1]![1]).toContain(T.groupsTitle);
+    });
+
+    test("a non-owner in a DM gets the groups-only text instead of the AI or other commands", async () => {
+      const reply = okReply();
+      const ai = echoAi();
+      for (const text of ["halo", "/translate x", "/reset", "/elysia hi", "/admin 1 reset"]) {
+        await handleEvents([dm(text, "U2")], reply, sessions, ai, settings);
+      }
+      expect(reply.mock.calls.map(([, text]) => text)).toEqual(Array(5).fill(T.dmGroupsOnly));
+      expect(reply.mock.calls.every(([, , quote]) => quote === "q")).toBe(true);
+      expect(ai).not.toHaveBeenCalled();
+    });
+
+    test("a non-owner in a DM may use /ping, /help, /groups and /config", async () => {
+      const reply = okReply();
+      for (const text of ["/ping", "/groups", "/config translate ko"]) {
+        await handleEvents([dm(text, "U2")], reply, sessions, echoAi(), settings);
+      }
+      expect(reply.mock.calls.map(([, text]) => text)).toEqual(["pong", T.groupsEmpty, T.settingChanged("translate", "ko")]);
+      expect(reply.mock.calls.every(([, , quote]) => quote === "q")).toBe(true);
+      expect(settings.stored("U2")).toEqual({ translate: "ko" });
+    });
+
+    test("access commands other than /groupconfig are unknown commands in a group", async () => {
+      const reply = okReply();
+      await handleEvents([textEvent("/groups", "rt-1", inGroup("C1", "U7")), textEvent("/approve 1", "rt-2", inGroup("C1", "U7"))], reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledWith("rt-1", T.unknownCommand("groups"), "q");
+      expect(reply).toHaveBeenCalledWith("rt-2", T.unknownCommand("approve"), "q");
+    });
+
+    test("/groupconfig in a group is for the admin only", async () => {
+      const reply = okReply();
+      await handleEvents(
+        [textEvent("/groupconfig translate ko", "rt-1", inGroup("C1", "U7")), textEvent("/groupconfig translate fr", "rt-2", inGroup("C1", "U5"))],
+        reply, sessions, echoAi(), settings,
+      );
+      expect(reply).toHaveBeenCalledWith("rt-1", T.settingChanged("translate", "ko"), "q");
+      expect(reply).toHaveBeenCalledWith("rt-2", T.groupConfigNotAdmin, "q");
+      expect(access.groupSettings.stored("C1")).toEqual({ translate: "ko" });
+    });
+
+    test("/translate in a group: the user's value beats the group's, which beats the LINE language and the default", async () => {
+      access.groupSettings.set("C1", "translate", "ko");
+      const run = async (userId: string | undefined, lineLanguage?: string) => {
+        const ai = echoAi();
+        await handleEvents([textEvent("/translate halo", "rt-1", inGroup("C1", userId))], okReply(), sessions, ai, settings, {
+          lineLanguage: async () => lineLanguage,
+          defaultLocale: "id",
+        });
+        return ai.mock.calls[0]![1];
+      };
+      expect(await run("U5", "ja-JP")).toBe(translatePrompt("ko"));
+      expect(await run(undefined)).toBe(translatePrompt("ko"));
+      settings.set("U5", "translate", "fr");
+      expect(await run("U5", "ja-JP")).toBe(translatePrompt("fr"));
+      access.groupSettings.unset("C1", "translate");
+      settings.unset("U5", "translate");
+      expect(await run("U5", "ja-JP")).toBe(translatePrompt("ja"));
+    });
+
+    test("a redelivered event does not record or reply twice", async () => {
+      groups.join("C5");
+      const dedupe = createDedupe(new Database(":memory:"));
+      const event = { ...mention("halo", "rt-1", "C5", "U2"), webhookEventId: "e1" } as webhook.Event;
+      const reply = okReply();
+      await handleEvents(dedupe(filterDms([event])), reply, sessions, echoAi(), settings);
+      await handleEvents(dedupe(filterDms([event])), reply, sessions, echoAi(), settings);
+      expect(reply).toHaveBeenCalledTimes(1);
+    });
+
+    describe("auto-translate", () => {
+      const noopAi = () => mock(async (_m: readonly StoredMessage[], _s?: string) => "NOOP");
+      const plain = (text: string, token: string, groupId: string, userId?: string) =>
+        textEvent(text, token, inGroup(groupId, userId));
+
+      test("/auto-translate toggles the switch for the sender in that group only", async () => {
+        const reply = okReply();
+        await handleEvents([textEvent("/auto-translate", "rt-1", inGroup("C1", "U5"))], reply, sessions, echoAi(), settings);
+        expect(reply).toHaveBeenCalledWith("rt-1", T.autoTranslateOn("en"), "q");
+        expect(autoTranslate.isOn("C1", "U5")).toBe(true);
+        expect(autoTranslate.isOn("C1", "U6")).toBe(false);
+        expect(autoTranslate.isOn("C9", "U5")).toBe(false);
+        await handleEvents([textEvent("/auto-translate", "rt-2", inGroup("C1", "U5"))], reply, sessions, echoAi(), settings);
+        expect(reply).toHaveBeenCalledWith("rt-2", T.autoTranslateOff, "q");
+        expect(autoTranslate.isOn("C1", "U5")).toBe(false);
+      });
+
+      test("a plain message of a sender who is on is translated, quoted, and not saved", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const ai = echoAi();
+        await handleEvents([plain("selamat pagi", "rt-1", "C1", "U5")], reply, sessions, ai, settings);
+        expect(ai).toHaveBeenCalledWith([{ role: "user", content: "selamat pagi" }], autoTranslatePrompt("en"));
+        expect(reply).toHaveBeenCalledWith("rt-1", "re: selamat pagi", "q");
+        expect(sessions.recent("C1", 10)).toEqual([]);
+      });
+
+      test("a leading *instruction* goes into the prompt and not into the text", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const ai = echoAi();
+        await handleEvents([plain("*sopan, ke atasan* selamat pagi", "rt-1", "C1", "U5")], okReply(), sessions, ai, settings);
+        expect(ai).toHaveBeenCalledWith([{ role: "user", content: "selamat pagi" }], autoTranslatePrompt("en", "sopan, ke atasan"));
+      });
+
+      test("an *instruction* also applies to the next messages until a new one replaces it", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const ai = echoAi();
+        await handleEvents([plain("*kansai* lagi makan?", "rt-1", "C1", "U5")], okReply(), sessions, ai, settings);
+        await handleEvents([plain("beneran?", "rt-2", "C1", "U5")], okReply(), sessions, ai, settings);
+        await handleEvents([plain("*sopan* terima kasih", "rt-3", "C1", "U5")], okReply(), sessions, ai, settings);
+        await handleEvents([plain("sampai jumpa", "rt-4", "C1", "U5")], okReply(), sessions, ai, settings);
+        const style = (i: number) => ai.mock.calls[i]![1]!;
+        expect(style(1)).toContain("kansai");
+        expect(style(2)).toContain("sopan");
+        expect(style(3)).toContain("sopan");
+        expect(style(3)).not.toContain("kansai");
+      });
+
+      test("a mention of another user goes to the AI as a placeholder and is mentioned again in the reply", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const ai = echoAi();
+        const mention: webhook.Mention = { mentionees: [{ type: "user", index: 0, length: 4, userId: "Uann" }] };
+        await handleEvents([textEvent("@Ann halo", "rt-1", inGroup("C1", "U5"), mention)], reply, sessions, ai, settings);
+        expect(ai.mock.calls[0]![0]).toEqual([{ role: "user", content: "{u1} halo" }]);
+        expect(reply).toHaveBeenCalledWith("rt-1", "re: {u1} halo", "q", { u1: "Uann" });
+      });
+
+      test("a placeholder the AI changed falls back to plain text with the typed name", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const ai = mock(async (_m: readonly StoredMessage[], _s?: string) => "hello {oops}, {u1}");
+        const mention: webhook.Mention = { mentionees: [{ type: "user", index: 0, length: 4, userId: "Uann" }] };
+        await handleEvents([textEvent("@Ann halo", "rt-1", inGroup("C1", "U5"), mention)], reply, sessions, ai, settings);
+        expect(reply).toHaveBeenCalledWith("rt-1", "hello {oops}, @Ann", "q");
+      });
+
+      test("/translate protects mentions the same way", async () => {
+        const reply = okReply();
+        const ai = echoAi();
+        const mention: webhook.Mention = { mentionees: [{ type: "user", index: 11, length: 4, userId: "Uann" }] };
+        await handleEvents([textEvent("/translate @Ann halo", "rt-1", inGroup("C1", "U5"), mention)], reply, sessions, ai, settings);
+        expect(ai.mock.calls[0]![0]).toEqual([{ role: "user", content: "{u1} halo" }]);
+        expect(reply).toHaveBeenCalledWith("rt-1", "re: {u1} halo", "q", { u1: "Uann" });
+      });
+
+      test("the next translation gets the sender's earlier translated messages as context", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const ai = echoAi();
+        await handleEvents([plain("kamu mau makan?", "rt-1", "C1", "U5")], okReply(), sessions, ai, settings);
+        await handleEvents([plain("iya", "rt-2", "C1", "U5")], okReply(), sessions, ai, settings);
+        expect(ai.mock.calls[0]![1]).toBe(autoTranslatePrompt("en"));
+        expect(ai.mock.calls[1]![1]).toBe(autoTranslatePrompt("en", undefined, ["kamu mau makan?"]));
+      });
+
+      test("context is not shared with other senders or groups, and NOOP and commands add nothing", async () => {
+        autoTranslate.toggle("C1", "U5");
+        autoTranslate.toggle("C1", "U6");
+        const ai = mock(async (messages: readonly StoredMessage[], _s?: string) =>
+          messages.at(-1)?.content === "already english" ? "NOOP" : "ok",
+        );
+        await handleEvents([plain("already english", "rt-1", "C1", "U5")], okReply(), sessions, ai, settings);
+        await handleEvents([plain("/ping", "rt-2", "C1", "U5")], okReply(), sessions, ai, settings);
+        expect(autoTranslate.recent("C1", "U5")).toEqual([]);
+        await handleEvents([plain("halo", "rt-3", "C1", "U5")], okReply(), sessions, ai, settings);
+        await handleEvents([plain("apa kabar", "rt-4", "C1", "U6")], okReply(), sessions, ai, settings);
+        expect(autoTranslate.recent("C1", "U5")).toEqual(["halo"]);
+        expect(autoTranslate.recent("C1", "U6")).toEqual(["apa kabar"]);
+      });
+
+      test("other members, and the same user in another group, are not translated", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const ai = echoAi();
+        await handleEvents([plain("halo", "rt-1", "C1", "U6"), plain("halo", "rt-2", "C9", "U5")], reply, sessions, ai, settings);
+        expect(reply).not.toHaveBeenCalled();
+        expect(ai).not.toHaveBeenCalled();
+      });
+
+      test("NOOP from the AI sends nothing and saves nothing", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const logSpy = spyOn(console, "log").mockImplementation(() => {});
+        await handleEvents([plain("good morning", "rt-1", "C1", "U5")], reply, sessions, noopAi(), settings);
+        expect(reply).not.toHaveBeenCalled();
+        expect(sessions.recent("C1", 10)).toEqual([]);
+        expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("auto-translate skipped: already in the target language (NOOP)"));
+        logSpy.mockRestore();
+      });
+
+      test("commands and mentions of a sender who is on take their usual path", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const ai = echoAi();
+        await handleEvents([textEvent("/ping", "rt-1", inGroup("C1", "U5")), mention("apa kabar?", "rt-2", "C1", "U5")], reply, sessions, ai, settings);
+        expect(reply).toHaveBeenCalledWith("rt-1", "pong", "q");
+        expect(ai).toHaveBeenCalledTimes(1);
+        expect(ai.mock.calls[0]![1]).toBe(DEFAULT_PROMPTS.group);
+        expect(sessions.recent("C1", 10)).toEqual([
+          { role: "user", content: "apa kabar?" },
+          { role: "assistant", content: "re: apa kabar?" },
+        ]);
+      });
+
+      test("a group that is not allowed refuses /auto-translate and stays silent for a sender who is on", async () => {
+        const group = groups.join("C5");
+        const reply = okReply();
+        await handleEvents([textEvent("/auto-translate", "rt-1", inGroup("C5", "U5"))], reply, sessions, echoAi(), settings);
+        expect(reply).toHaveBeenCalledWith("rt-1", T.notPermitted(group.id), "q");
+        expect(autoTranslate.isOn("C5", "U5")).toBe(false);
+        autoTranslate.toggle("C5", "U6");
+        clock += NOT_PERMITTED_NOTICE_MS;
+        const ai = echoAi();
+        await handleEvents([plain("halo", "rt-2", "C5", "U6")], reply, sessions, ai, settings);
+        expect(reply).toHaveBeenCalledTimes(1);
+        expect(ai).not.toHaveBeenCalled();
+      });
+
+      test("/auto-translate in a DM is refused, for the owner too", async () => {
+        const reply = okReply();
+        await handleEvents([dm("/auto-translate", "U5"), textEvent("/auto-translate", "rt-own", USER_U1)], reply, sessions, echoAi(), settings);
+        expect(reply).toHaveBeenCalledWith("rt-dm", T.autoTranslateGroupOnly, "q");
+        expect(reply).toHaveBeenCalledWith("rt-own", T.autoTranslateGroupOnly, "q");
+      });
+
+      test("over the group rate limit a translation is dropped silently", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        const ai = echoAi();
+        const rateLimit = mock((_key: string) => "notify" as const);
+        await handleEvents([plain("halo", "rt-1", "C1", "U5")], reply, sessions, ai, settings, ID_LANGUAGES, rateLimit);
+        expect(rateLimit).toHaveBeenCalledWith("C1");
+        expect(reply).not.toHaveBeenCalled();
+        expect(ai).not.toHaveBeenCalled();
+      });
+
+      test("an AI failure is logged and gets no reply", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const reply = okReply();
+        await handleEvents([plain("halo", "rt-1", "C1", "U5")], reply, sessions, failingAi(), settings);
+        expect(reply).not.toHaveBeenCalled();
+        expect(errorSpy).toHaveBeenCalled();
+      });
+
+      test("a redelivered message is translated once", async () => {
+        autoTranslate.toggle("C1", "U5");
+        const dedupe = createDedupe(new Database(":memory:"));
+        const event = { ...plain("halo", "rt-1", "C1", "U5"), webhookEventId: "e9" } as webhook.Event;
+        const reply = okReply();
+        await handleEvents(dedupe(filterDms([event])), reply, sessions, echoAi(), settings);
+        await handleEvents(dedupe(filterDms([event])), reply, sessions, echoAi(), settings);
+        expect(reply).toHaveBeenCalledTimes(1);
+      });
+
+      test("the target language follows the /translate resolution", async () => {
+        autoTranslate.toggle("C1", "U5");
+        // Each run adds to the sender's context, so the expected prompt carries what was remembered before it.
+        const run = async (language: string, lineLanguage?: string) => {
+          const earlier = autoTranslate.recent("C1", "U5");
+          const ai = echoAi();
+          await handleEvents([plain("halo", "rt-1", "C1", "U5")], okReply(), sessions, ai, settings, {
+            lineLanguage: async () => lineLanguage,
+            defaultLocale: "id",
+          });
+          expect(ai.mock.calls[0]![1]).toBe(autoTranslatePrompt(language, undefined, earlier));
+        };
+        await run("en");
+        await run("ja", "ja-JP");
+        access.groupSettings.set("C1", "translate", "ko");
+        await run("ko", "ja-JP");
+        settings.set("U5", "translate", "fr");
+        await run("fr", "ja-JP");
+      });
+    });
   });
 });

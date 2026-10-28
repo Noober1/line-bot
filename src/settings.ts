@@ -27,12 +27,12 @@ export const SETTINGS: ReadonlyMap<SettingKey, SettingSpec> = new Map<SettingKey
 ]);
 
 export type SettingsStore = {
-  // Global defaults (env), used when the user has no value of their own.
+  // Global defaults (env), used when there is no own value.
   readonly defaults: Settings;
-  // Only the values the user set. A stored value that is no longer valid is skipped.
-  readonly stored: (userId: string) => Partial<Settings>;
-  readonly set: (userId: string, key: SettingKey, value: string) => void;
-  readonly unset: (userId: string, key: SettingKey) => void;
+  // `id`: a user ID (user_settings) or a LINE group ID (group_settings). Only set values; invalid stored ones are skipped.
+  readonly stored: (id: string) => Partial<Settings>;
+  readonly set: (id: string, key: SettingKey, value: string) => void;
+  readonly unset: (id: string, key: SettingKey) => void;
 };
 
 // The settings of one user, as commands see them.
@@ -43,61 +43,74 @@ export type UserSettings = {
   readonly unset: (key: SettingKey) => void;
 };
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS user_settings (
-  user_id TEXT NOT NULL,
+// The same key/value table per user or per LINE group. A literal union, so no SQL can be injected.
+export type SettingsTable = "user_settings" | "group_settings";
+const ID_COLUMNS: Readonly<Record<SettingsTable, string>> = { user_settings: "user_id", group_settings: "group_id" };
+
+export function createSettingsStore(db: Database, defaults: Settings, table: SettingsTable = "user_settings"): SettingsStore {
+  const column = ID_COLUMNS[table];
+  db.run(`
+CREATE TABLE IF NOT EXISTS ${table} (
+  ${column} TEXT NOT NULL,
   key TEXT NOT NULL,
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL,
-  PRIMARY KEY (user_id, key)
-);
-`;
-
-export function createSettingsStore(db: Database, defaults: Settings): SettingsStore {
-  db.run(SCHEMA);
+  PRIMARY KEY (${column}, key)
+);`);
   const select = db.query<{ key: string; value: string }, [string]>(
-    "SELECT key, value FROM user_settings WHERE user_id = ?",
+    `SELECT key, value FROM ${table} WHERE ${column} = ?`,
   );
   const upsert = db.query<void, [string, string, string, number]>(
-    `INSERT INTO user_settings (user_id, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
-     ON CONFLICT (user_id, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    `INSERT INTO ${table} (${column}, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
+     ON CONFLICT (${column}, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
   );
-  const remove = db.query<void, [string, string]>("DELETE FROM user_settings WHERE user_id = ? AND key = ?");
+  const remove = db.query<void, [string, string]>(`DELETE FROM ${table} WHERE ${column} = ? AND key = ?`);
 
   return {
     defaults,
-    stored: (userId) =>
+    stored: (id) =>
       Object.fromEntries(
-        select.all(userId).flatMap((row) => {
+        select.all(id).flatMap((row) => {
           const key = parseSettingKey(row.key);
           const value = key && parseSettingValue(key, row.value);
           return key && value ? [[key, value]] : [];
         }),
       ),
-    set: (userId, key, value) => {
-      upsert.run(userId, key, value, Date.now());
+    set: (id, key, value) => {
+      upsert.run(id, key, value, Date.now());
     },
-    unset: (userId, key) => {
-      remove.run(userId, key);
+    unset: (id, key) => {
+      remove.run(id, key);
     },
   };
 }
 
-// Binds the store to one user. `lineLanguage` is the user's LINE language (BCP 47), if known.
-export function settingsFor(store: SettingsStore, userId: string, lineLanguage?: string): UserSettings {
+// Binds the store to one user (or one group). `lineLanguage`: the user's LINE language (BCP 47), if known.
+// `group`: the stored settings of the group the command came from ({} outside a group).
+export function settingsFor(
+  store: SettingsStore,
+  userId: string,
+  lineLanguage?: string,
+  group: Partial<Settings> = {},
+): UserSettings {
   return {
     stored: () => store.stored(userId),
-    resolved: () => resolveSettings(store.stored(userId), store.defaults, lineLanguage),
+    resolved: () => resolveSettings(store.stored(userId), store.defaults, lineLanguage, group),
     set: (key, value) => store.set(userId, key, value),
     unset: (key) => store.unset(userId, key),
   };
 }
 
-// Order: the user's own value > the user's LINE language (translate only) > global default.
-export function resolveSettings(stored: Partial<Settings>, defaults: Settings, lineLanguage?: string): Settings {
+// Order: the user's own value > the group's value (in that group only) > the user's LINE language (translate only) > global default.
+export function resolveSettings(
+  stored: Partial<Settings>,
+  defaults: Settings,
+  lineLanguage?: string,
+  group: Partial<Settings> = {},
+): Settings {
   // A BCP 47 tag like "zh-Hant" or "pt-BR" maps to its ISO 639-1 part.
   const fromLine = lineLanguage ? parseLanguage(lineLanguage.split("-")[0] ?? "") : null;
-  return { ...defaults, ...(fromLine ? { translate: fromLine } : {}), ...stored };
+  return { ...defaults, ...(fromLine ? { translate: fromLine } : {}), ...group, ...stored };
 }
 
 // Case-insensitive. Null for an unknown key.

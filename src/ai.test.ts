@@ -45,6 +45,41 @@ describe("createAi", () => {
     ]);
   });
 
+  test("an image rides on the newest message as text + image_url parts; earlier messages stay strings", async () => {
+    const fetchFn = answering("hai");
+    await createAi(config, fetchFn)(
+      [
+        { role: "user", content: "a" },
+        { role: "assistant", content: "b" },
+        { role: "user", content: "lihat" },
+      ],
+      "sys",
+      { mime: "image/png", base64: "AQID" },
+    );
+    const { messages } = JSON.parse(fetchFn.mock.calls[0]![1].body as string);
+    expect(messages[3]).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "lihat" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,AQID" } },
+      ],
+    });
+    expect(messages[1].content).toBe("a");
+  });
+
+  test("without an image the newest message stays a plain string", async () => {
+    const fetchFn = answering("hai");
+    await createAi(config, fetchFn)([{ role: "user", content: "halo" }]);
+    const { messages } = JSON.parse(fetchFn.mock.calls[0]![1].body as string);
+    expect(messages.at(-1).content).toBe("halo");
+  });
+
+  test("an HTTP error with an image leaves the response body out of the error", async () => {
+    const fetchFn = mock(async (_url: string, _init: RequestInit) => new Response("ECHO iVBOR", { status: 400 }));
+    const call = createAi(config, fetchFn)([{ role: "user", content: "x" }], "sys", { mime: "image/png", base64: "AQID" });
+    await expect(call).rejects.toThrow(/^AI request failed: HTTP 400$/);
+  });
+
   test("sends no Authorization header without an API key", async () => {
     const fetchFn = answering("hai");
     await createAi(config, fetchFn)([{ role: "user", content: "halo" }]);

@@ -109,6 +109,147 @@ describe("handleEvents", () => {
     expect(reply).toHaveBeenCalledWith("rt-1", "re: hello", "q");
   });
 
+  describe("images", () => {
+    const PNG = { mime: "image/png", base64: "iVBORw0KGgo=" };
+    const PROMPT = MESSAGES.id.imagePrompt;
+    const okImage = () => mock(async (_id: string) => PNG);
+    const failingImage = () =>
+      mock(async (_id: string): Promise<typeof PNG> => {
+        throw new Error("download down");
+      });
+    function imageEvent(source: webhook.Source = USER_U1, provider: "line" | "external" = "line"): webhook.Event {
+      return {
+        type: "message",
+        replyToken: "rt-1",
+        source,
+        message: { type: "image", id: "100", quoteToken: "q", contentProvider: { type: provider } },
+      } as webhook.Event;
+    }
+    const imageAi = () => mock(async (messages: readonly StoredMessage[], _system?: string, _image?: unknown) => `re: ${messages.at(-1)?.content}`);
+    function run(
+      events: webhook.Event[],
+      fetchImage: Parameters<typeof handle>[11],
+      { reply = okReply(), ai = imageAi(), rateLimit = (() => "allow") as RateLimit, showLoading = undefined as Parameters<typeof handle>[9] } = {},
+    ) {
+      return handle(events, reply, sessions, ai, settings, ID_LANGUAGES, rateLimit, access, autoTranslate, showLoading, undefined, fetchImage);
+    }
+
+    test("an owner's image in a 1:1 chat goes to the AI with the localized prompt and is answered quoted", async () => {
+      const reply = okReply();
+      const ai = imageAi();
+      const fetchImage = okImage();
+      await run([imageEvent()], fetchImage, { reply, ai });
+      expect(fetchImage).toHaveBeenCalledWith("100");
+      expect(ai).toHaveBeenCalledWith([{ role: "user", content: PROMPT }], DEFAULT_PROMPTS.dm, PNG);
+      expect(reply).toHaveBeenCalledWith("rt-1", `re: ${PROMPT}`, "q");
+    });
+
+    test("the history keeps a placeholder and the answer, never the image", async () => {
+      await run([imageEvent()], okImage());
+      const stored = sessions.recent("U1", 10);
+      expect(stored).toEqual([
+        { role: "user", content: `[image] ${PROMPT}` },
+        { role: "assistant", content: `re: ${PROMPT}` },
+      ]);
+      expect(JSON.stringify(stored)).not.toContain("iVBOR");
+    });
+
+    test("earlier chat goes with the image", async () => {
+      await run([textEvent("apa merek mobil ini?", "rt-0")], okImage());
+      const ai = imageAi();
+      await run([imageEvent()], okImage(), { ai });
+      expect(ai.mock.calls[0]![0][0]).toEqual({ role: "user", content: "apa merek mobil ini?" });
+    });
+
+    test("an image in a group is ignored before the gate and the rate limit", async () => {
+      const reply = okReply();
+      const ai = imageAi();
+      const fetchImage = okImage();
+      const rateLimit = mock(() => "allow" as const);
+      await run([imageEvent({ type: "group", groupId: "C5", userId: "U2" })], fetchImage, { reply, ai, rateLimit });
+      expect(reply).not.toHaveBeenCalled();
+      expect(ai).not.toHaveBeenCalled();
+      expect(fetchImage).not.toHaveBeenCalled();
+      expect(rateLimit).not.toHaveBeenCalled();
+      expect(groups.get("C5")).toBeNull();
+    });
+
+    test("a non-owner's image in a 1:1 chat gets dmGroupsOnly and is not downloaded", async () => {
+      const reply = okReply();
+      const fetchImage = okImage();
+      await run([imageEvent(USER_U2)], fetchImage, { reply });
+      expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.dmGroupsOnly, "q");
+      expect(fetchImage).not.toHaveBeenCalled();
+    });
+
+    test("an external image is never fetched", async () => {
+      const reply = okReply();
+      const fetchImage = okImage();
+      await run([imageEvent(USER_U1, "external")], fetchImage, { reply });
+      expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.imageFailed, "q");
+      expect(fetchImage).not.toHaveBeenCalled();
+    });
+
+    test("a failed download replies imageFailed, calls no AI and saves nothing", async () => {
+      const reply = okReply();
+      const ai = imageAi();
+      await run([imageEvent()], failingImage(), { reply, ai });
+      expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.imageFailed, "q");
+      expect(ai).not.toHaveBeenCalled();
+      expect(sessions.recent("U1", 10)).toEqual([]);
+    });
+
+    test("an AI failure replies aiFailed and a timeout aiTimeout, nothing saved", async () => {
+      const reply = okReply();
+      await run([imageEvent()], okImage(), { reply, ai: failingAi() });
+      expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.aiFailed, "q");
+      const timeoutReply = okReply();
+      const timingOut = mock(async (_m: readonly StoredMessage[], _s?: string, _i?: unknown): Promise<string> => {
+        throw Object.assign(new Error("t"), { name: "TimeoutError" });
+      });
+      await run([imageEvent()], okImage(), { reply: timeoutReply, ai: timingOut });
+      expect(timeoutReply).toHaveBeenCalledWith("rt-1", MESSAGES.id.aiTimeout, "q");
+      expect(sessions.recent("U1", 10)).toEqual([]);
+    });
+
+    test("the rate limit runs before the download", async () => {
+      const reply = okReply();
+      const fetchImage = okImage();
+      await run([imageEvent()], fetchImage, { reply, rateLimit: () => "notify" });
+      expect(reply).toHaveBeenCalledWith("rt-1", MESSAGES.id.rateLimited, "q");
+      expect(fetchImage).not.toHaveBeenCalled();
+      const quiet = okReply();
+      await run([imageEvent()], fetchImage, { reply: quiet, rateLimit: () => "drop" });
+      expect(quiet).not.toHaveBeenCalled();
+      expect(fetchImage).not.toHaveBeenCalled();
+    });
+
+    test("the loading animation starts for an image", async () => {
+      const showLoading = mock(async (_userId: string) => {});
+      await run([imageEvent()], okImage(), { showLoading });
+      expect(showLoading).toHaveBeenCalledWith("U1");
+    });
+
+    test("without a fetchImage an image is ignored", async () => {
+      const reply = okReply();
+      await run([imageEvent()], undefined, { reply });
+      expect(reply).not.toHaveBeenCalled();
+    });
+
+    test("the image bytes never reach the log; size and type do", async () => {
+      const out = captureLog("debug");
+      try {
+        await run([imageEvent()], okImage());
+        const text = out.lines.join("\n");
+        expect(text).not.toContain("iVBORw0KGgo");
+        expect(text).toContain("ai image");
+        expect(text).toContain("mime=image/png");
+      } finally {
+        out.restore();
+      }
+    });
+  });
+
   describe("logging", () => {
     const withId = (event: webhook.Event, id: string) => ({ ...event, webhookEventId: id }) as webhook.Event;
     let out: ReturnType<typeof captureLog>;

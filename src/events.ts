@@ -1,10 +1,11 @@
 import type { webhook } from "@line/bot-sdk";
 import { ACCESS_COMMANDS, isOwner, runAccessCommand, type Access } from "./access-commands";
-import type { Ai } from "./ai";
+import type { Ai, AiImage } from "./ai";
 import { describeSource } from "./allowlist";
 import type { AutoTranslateStore } from "./auto-translate";
 import { autoTranslatePrompt, MAX_TRANSLATE_CHARS, parseCommand, parseInstruction, runCommand, type Command } from "./commands";
 import { LONG_ANSWER_CHARS, translateLanguageOptions, type ReplyExtras } from "./flex";
+import type { FetchImage } from "./image";
 import { localeFromLine, type LineLanguage, type Locale } from "./language";
 import { logger, preview, shortId, withEvent } from "./log";
 import { plainText, protectMentions, restoreMentions, type Mentions, type ShieldedText } from "./mentions";
@@ -63,6 +64,9 @@ const GROUPS_COMMAND = "groups";
 // The only access command that also works in a group.
 const GROUP_CONFIG_COMMAND = "groupconfig";
 
+// What the history keeps for an image: the bytes are never stored.
+const IMAGE_PLACEHOLDER = "[image]";
+
 // Never rejects: one failed reply or AI call must not affect the others or crash the process.
 export async function handleEvents(
   events: webhook.Event[],
@@ -76,6 +80,8 @@ export async function handleEvents(
   autoTranslate: AutoTranslateStore,
   showLoading?: ShowLoading,
   prompts: ChatPrompts = DEFAULT_PROMPTS,
+  // Without it, images are ignored like any other non-text message.
+  fetchImage?: FetchImage,
 ): Promise<void> {
   await Promise.all(
     events.map((event) =>
@@ -83,7 +89,7 @@ export async function handleEvents(
         const started = Date.now();
         log.info("event", { type: event.type, source: describeSource(event.source), kind: messageKind(event) });
         try {
-          await handleEvent(event, timedReply(reply), sessions, timedAi(ai), settings, languages, rateLimit, access, autoTranslate, showLoading, prompts);
+          await handleEvent(event, timedReply(reply), sessions, timedAi(ai), settings, languages, rateLimit, access, autoTranslate, showLoading, prompts, fetchImage);
         } catch (error) {
           log.error("event failed", { err: error });
         } finally {
@@ -126,7 +132,7 @@ function timedAi(ai: Ai): Ai {
     const started = Date.now();
     try {
       const answer = await ai(...args);
-      log.info("ai answered", { messages: args[0].length, chars: answer.length, ms: Date.now() - started });
+      log.info("ai answered", { messages: args[0].length, chars: answer.length, image: args[2] ? true : undefined, ms: Date.now() - started });
       return answer;
     } catch (error) {
       log.warn("ai failed", { messages: args[0].length, ms: Date.now() - started, err: error });
@@ -147,6 +153,7 @@ async function handleEvent(
   autoTranslate: AutoTranslateStore,
   showLoading: ShowLoading | undefined,
   prompts: ChatPrompts,
+  fetchImage: FetchImage | undefined,
 ): Promise<void> {
   const { source } = event;
   const userId = source?.userId;
@@ -163,6 +170,12 @@ async function handleEvent(
     // Admin and group settings are kept; a new join makes the group pending again.
     access.groups.leave(groupId);
     log.info("left group", { group: shortId(groupId) });
+    return;
+  }
+  // A LINE image carries no mention, so in a group it is plain chat: it falls through to the non-text return
+  // below, above the access gate and the rate limit. In a 1:1 chat it goes to answerImage.
+  if (event.type === "message" && event.message.type === "image" && event.replyToken && !groupId && userId && fetchImage) {
+    await answerImage(event.message, userId, event.replyToken, reply, sessions, ai, languages, rateLimit, access, fetchImage, showLoading, prompts);
     return;
   }
   if (event.type !== "message" || event.message.type !== "text" || !event.replyToken) {
@@ -354,6 +367,75 @@ async function autoTranslateText(
   autoTranslate.remember(groupId, userId, plainText(body, shielded));
   const restored = restoreMentions(answer, shielded, MAX_TEXT_LENGTH);
   await respond(restored.text, restored.mentions);
+}
+
+// An image in a 1:1 chat, in the same order as text: rate limit, then the owner check (others get dmGroupsOnly), then the AI.
+// The image lives in memory for this call only; the history keeps a placeholder and the answer.
+async function answerImage(
+  message: webhook.ImageMessageContent,
+  userId: string,
+  replyToken: string,
+  reply: Reply,
+  sessions: SessionStore,
+  ai: Ai,
+  languages: Languages,
+  rateLimit: RateLimit,
+  access: Access,
+  fetchImage: FetchImage,
+  showLoading: ShowLoading | undefined,
+  prompts: ChatPrompts,
+): Promise<void> {
+  const respond = (text: string, extras?: ReplyExtras) =>
+    extras ? reply(replyToken, text, message.quoteToken, undefined, extras) : reply(replyToken, text, message.quoteToken);
+  const verdict = rateLimit(userId);
+  if (verdict !== "allow") {
+    if (verdict === "notify") {
+      log.warn("rate limited: sending the notice", { source: shortId(userId) });
+      await respond(MESSAGES[(await senderLanguage(userId, languages)).locale].rateLimited);
+    } else {
+      log.debug("rate limited: silent", { source: shortId(userId) });
+    }
+    return;
+  }
+  // The LINE language picks the prompt: an image has no text the AI could take the language from.
+  const t = MESSAGES[(await senderLanguage(userId, languages)).locale];
+  if (!isOwner(access, userId)) {
+    log.info("ignored: DM from a non-owner outside the DM commands");
+    await respond(t.dmGroupsOnly);
+    return;
+  }
+  // Only LINE's content API is ever fetched: an external image URL is never followed.
+  if (message.contentProvider.type !== "line") {
+    log.info("image skipped: external content provider");
+    await respond(t.imageFailed);
+    return;
+  }
+  // Not awaited, as for text: the download is part of the wait.
+  showLoading?.(userId).catch((error: unknown) => log.warn("loading animation failed", { err: error }));
+  const started = Date.now();
+  let image: AiImage;
+  try {
+    image = await fetchImage(message.id);
+  } catch (error) {
+    log.warn("image download failed", { ms: Date.now() - started, err: error });
+    await respond(t.imageFailed);
+    return;
+  }
+  const past = history(sessions, userId);
+  // Size and type only, never the bytes.
+  log.info("ai image", { history: past.length, mime: image.mime, bytes: Math.floor((image.base64.length * 3) / 4), ms: Date.now() - started, set: message.imageSet?.total });
+  let answer: string;
+  try {
+    answer = await ai([...past, { role: "user", content: t.imagePrompt }], prompts.dm, image);
+  } catch (error) {
+    log.error("ai image failed", { err: error });
+    await respond(isTimeout(error) ? t.aiTimeout : t.aiFailed);
+    return;
+  }
+  await respond(answer, answer.length > LONG_ANSWER_CHARS ? { flex: "answer" } : undefined);
+  // Saved only after a successful reply, like text.
+  sessions.append(userId, "user", `${IMAGE_PLACEHOLDER} ${t.imagePrompt}`);
+  sessions.append(userId, "assistant", answer);
 }
 
 // Cards for the list-like command answers in a 1:1 chat; /config also offers the translate languages as buttons.

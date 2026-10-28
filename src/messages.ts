@@ -35,6 +35,10 @@ export type Messages = {
   readonly rateLimited: string;
   // /elysia without text, or a group message that only mentions the bot.
   readonly elysiaUsage: string;
+  // Sent to the AI with an image (a LINE image has no caption): picks the answer language too.
+  readonly imagePrompt: string;
+  // The image could not be downloaded or used (too large, unsupported type, external, unsent).
+  readonly imageFailed: string;
   // /config in a group: LINE has no private reply there and a push DM costs quota.
   readonly configInGroup: string;
   // /auto-translate in a group: the sender's switch is now on (target language) or off.
@@ -100,6 +104,8 @@ const id: Messages = {
   settingChanged: (key, value) => `${key} diubah ke ${value}.`,
   rateLimited: "Pesannya terlalu banyak. Tunggu sebentar lalu coba lagi.",
   elysiaUsage: "Pakai: /elysia <pesan>. Di grup, bisa juga mention bot lalu tulis pesannya.",
+  imagePrompt: "Jelaskan gambar ini secara singkat. Kalau ada teks, pertanyaan, atau soal di gambar, bantu jawab juga.",
+  imageFailed: "Maaf, gambarnya tidak bisa dibaca (mungkin terlalu besar atau formatnya tidak didukung). Coba kirim gambar lain.",
   configInGroup: "Ganti pengaturan kamu lewat chat pribadi (DM) dengan bot, jangan di grup. Admin grup: pengaturan grup pakai /groupconfig.",
   autoTranslateOn: (language) => `Terjemahan otomatis aktif: pesanmu di grup ini akan diterjemahkan ke ${language}. Ketik /auto-translate lagi untuk mematikan.`,
   autoTranslateOff: "Terjemahan otomatis dimatikan untuk kamu di grup ini.",
@@ -157,6 +163,8 @@ const en: Messages = {
   settingChanged: (key, value) => `${key} changed to ${value}.`,
   rateLimited: "Too many messages. Please wait a moment and try again.",
   elysiaUsage: "Usage: /elysia <message>. In a group you can also mention the bot and write your message.",
+  imagePrompt: "Describe this image briefly. If it contains text, a question or a problem, help with it too.",
+  imageFailed: "Sorry, I couldn't read that image (it may be too large or in an unsupported format). Please try another one.",
   configInGroup: "Change your settings in a private chat (DM) with the bot, not in a group. Group admin: use /groupconfig for the group's settings.",
   autoTranslateOn: (language) => `Auto-translate is on: your messages in this group will be translated into ${language}. Type /auto-translate again to turn it off.`,
   autoTranslateOff: "Auto-translate is off for you in this group.",
@@ -214,6 +222,8 @@ const ja: Messages = {
   settingChanged: (key, value) => `${key} を ${value} に変更しました。`,
   rateLimited: "メッセージが多すぎます。少し待ってからもう一度お試しください。",
   elysiaUsage: "使い方: /elysia <メッセージ>。グループではボットをメンションしてメッセージを書くこともできます。",
+  imagePrompt: "この画像を簡単に説明してください。画像に文字や質問、問題があれば、それにも答えてください。",
+  imageFailed: "申し訳ありません。画像を読み込めませんでした（大きすぎるか、対応していない形式の可能性があります）。別の画像でお試しください。",
   configInGroup: "自分の設定の変更はグループではなく、ボットとの個別チャットで行ってください。グループの管理者は /groupconfig でグループの設定を変更できます。",
   autoTranslateOn: (language) => `自動翻訳をオンにしました: このグループでのあなたのメッセージを ${language} に翻訳します。オフにするにはもう一度 /auto-translate と入力してください。`,
   autoTranslateOff: "このグループでのあなたの自動翻訳をオフにしました。",
@@ -270,6 +280,8 @@ const zhHans: Messages = {
   settingChanged: (key, value) => `${key} 已更改为 ${value}。`,
   rateLimited: "消息太多了，请稍等片刻再试。",
   elysiaUsage: "用法：/elysia <消息>。在群组中也可以 @机器人 后输入消息。",
+  imagePrompt: "请简要描述这张图片。如果图片中有文字、问题或题目，也请帮忙解答。",
+  imageFailed: "抱歉，无法读取这张图片（可能太大或格式不受支持）。请换一张试试。",
   configInGroup: "请在与机器人的私聊中更改你的设置，不要在群组中更改。群组管理员：请用 /groupconfig 更改群组设置。",
   autoTranslateOn: (language) => `自动翻译已开启：你在本群组的消息将被翻译成 ${language}。再次输入 /auto-translate 即可关闭。`,
   autoTranslateOff: "已为你关闭本群组的自动翻译。",
@@ -326,6 +338,8 @@ const zhHant: Messages = {
   settingChanged: (key, value) => `${key} 已變更為 ${value}。`,
   rateLimited: "訊息太多了，請稍候再試。",
   elysiaUsage: "用法：/elysia <訊息>。在群組中也可以 @機器人 後輸入訊息。",
+  imagePrompt: "請簡要描述這張圖片。如果圖片中有文字、問題或題目，也請幫忙解答。",
+  imageFailed: "抱歉，無法讀取這張圖片（可能太大或格式不支援）。請換一張試試。",
   configInGroup: "請在與機器人的私聊中變更你的設定，不要在群組中變更。群組管理員：請用 /groupconfig 變更群組設定。",
   autoTranslateOn: (language) => `自動翻譯已開啟：你在本群組的訊息將被翻譯成 ${language}。再次輸入 /auto-translate 即可關閉。`,
   autoTranslateOff: "已為你關閉本群組的自動翻譯。",

@@ -58,3 +58,17 @@
 7. Tanya dalam Inggris/Jepang -> dijawab dengan bahasa yang sama.
 8. `/translate` dan auto-translate tidak terpengaruh persona.
 9. `PERSONA_FILE=tidak-ada.md` -> bot gagal start dengan pesan jelas; persona >4000 karakter -> gagal start.
+
+## 18a. Gambar (vision)
+0. Sebelum mulai: curl smoke test vision ke 9router sudah lolos (jawaban normal, bukan HTTP 4xx).
+1. DM dari akun owner: kirim foto tanpa teks -> loading animation, lalu balasan Elysia yang menjelaskan foto, mengutip foto itu, bahasa LINE kamu.
+2. DM owner: ketik `apa merek mobil ini?`, lalu kirim foto mobil -> bot jawab teks dulu, lalu jawaban foto memakai pertanyaan tadi.
+3. Setelah foto dijawab, tanya `warnanya apa?` -> jawaban berdasar deskripsi sebelumnya (bot tidak melihat ulang gambar; wajar).
+4. Kirim 3 foto sekaligus -> 3 jawaban terpisah (masing-masing mengutip fotonya); spam banyak foto -> pesan rate limit.
+5. Kirim screenshot berisi teks/soal -> bot membaca dan membantu.
+6. Di grup allowed: kirim foto (dengan/tanpa mention) -> bot diam. Di grup pending -> diam, tanpa notifikasi izin.
+7. DM dari akun bukan owner: kirim foto -> `dmGroupsOnly`, tidak ada jawaban AI.
+8. Matikan 9router lalu kirim foto di DM owner -> pesan "AI lagi bermasalah", bot tidak crash.
+9. Ganti AI_MODEL ke model tanpa vision, kirim foto -> pesan gagal AI atau "tidak bisa melihat gambar", bot tidak crash. Kembalikan model.
+10. Terminal di LOG_LEVEL=info dan debug: ada `ai image mime=... bytes=...`, TIDAK ada base64/isi gambar.
+11. `/reset` lalu ngobrol -> riwayat gambar hilang juga.

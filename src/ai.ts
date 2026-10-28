@@ -7,9 +7,12 @@ export type AiConfig = {
   readonly model: string;
 };
 
+// An image for the newest message, held in memory only. `mime` is one of IMAGE_TYPES (image.ts).
+export type AiImage = { readonly mime: string; readonly base64: string };
+
 // `messages` = chat history plus the new user message, oldest first. `system` replaces SYSTEM_PROMPT.
-// Resolves to the answer text.
-export type Ai = (messages: readonly StoredMessage[], system?: string) => Promise<string>;
+// `image` rides on the newest message. Resolves to the answer text.
+export type Ai = (messages: readonly StoredMessage[], system?: string, image?: AiImage) => Promise<string>;
 
 type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -22,7 +25,22 @@ export const AI_TIMEOUT_MS = 40_000;
 // Talks to any OpenAI-compatible /chat/completions endpoint (9router).
 export function createAi(config: AiConfig, fetchFn: FetchFn = fetch, timeoutMs = AI_TIMEOUT_MS): Ai {
   const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
-  return async (messages, system = SYSTEM_PROMPT) => {
+  return async (messages, system = SYSTEM_PROMPT, image) => {
+    const last = messages.at(-1);
+    // OpenAI-style content parts on the newest message only; the history stays plain text.
+    const chat =
+      image && last
+        ? [
+            ...messages.slice(0, -1),
+            {
+              role: last.role,
+              content: [
+                { type: "text", text: last.content },
+                { type: "image_url", image_url: { url: `data:${image.mime};base64,${image.base64}` } },
+              ],
+            },
+          ]
+        : messages;
     const response = await fetchFn(url, {
       method: "POST",
       headers: {
@@ -33,12 +51,14 @@ export function createAi(config: AiConfig, fetchFn: FetchFn = fetch, timeoutMs =
         model: config.model,
         max_tokens: MAX_ANSWER_TOKENS,
         stream: false,
-        messages: [{ role: "system", content: system }, ...messages],
+        messages: [{ role: "system", content: system }, ...chat],
       }),
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (!response.ok) {
-      throw new Error(`AI request failed: HTTP ${response.status} ${(await response.text()).slice(0, 200)}`);
+      // With an image the error body might echo the base64 back: keep it out of the error (and the log).
+      const detail = image ? "" : ` ${(await response.text()).slice(0, 200)}`;
+      throw new Error(`AI request failed: HTTP ${response.status}${detail}`);
     }
     const body = (await response.json()) as { choices?: { message?: { content?: unknown } }[] };
     const content = body.choices?.[0]?.message?.content;

@@ -9,6 +9,7 @@ import { loadConfig, type Config } from "./src/config";
 import { createDedupe } from "./src/dedupe";
 import { handleEvents, type Languages, type Reply, type ShowLoading } from "./src/events";
 import { createGroupStore } from "./src/groups";
+import { createFetchImage } from "./src/image";
 import { configureLog, logger } from "./src/log";
 import { createLineLanguage } from "./src/language";
 import { buildChatPrompts } from "./src/persona";
@@ -60,6 +61,7 @@ const dedupe = createDedupe(db);
 const autoTranslate = createAutoTranslateStore(db);
 const rateLimit = createRateLimit(config.rateLimitPerMinute);
 const ai = createAi(config.ai);
+const fetchImage = createFetchImage(config.lineChannelAccessToken);
 const prompts = buildChatPrompts(config.persona);
 const languages: Languages = {
   lineLanguage: createLineLanguage(db, async (userId) => (await client.getProfile(userId)).language),
@@ -69,7 +71,7 @@ const languages: Languages = {
 const app = createApp({
   channelSecret: config.lineChannelSecret,
   onEvents: (events) =>
-    void handleEvents(dedupe(filterDms(events)), reply, sessions, ai, settings, languages, rateLimit, access, autoTranslate, showLoading, prompts),
+    void handleEvents(dedupe(filterDms(events)), reply, sessions, ai, settings, languages, rateLimit, access, autoTranslate, showLoading, prompts, fetchImage),
 });
 
 const server = Bun.serve({ port: config.port, maxRequestBodySize: MAX_REQUEST_BODY_BYTES, fetch: app });

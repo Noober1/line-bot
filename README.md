@@ -23,7 +23,7 @@ Health check: `GET /health` returns `{"status":"ok"}`.
 
 `POST /webhook` receives LINE events. It checks the `x-line-signature` header
 (401 if missing or wrong; bodies over 1 MB get 413 from Bun first, see `MAX_REQUEST_BODY_BYTES` in `src/app.ts`), returns 200 right away, then answers every text message:
-commands (see below) get their reply, any other text is answered by the AI (see "AI chat").
+commands (see below) get their reply, any other text, and an image the owner sends in a 1:1 chat, is answered by the AI (see "AI chat").
 
 Dev with a real LINE channel:
 
@@ -156,6 +156,12 @@ AI_API_KEY=                               # optional: only if 9router has REQUIR
   works on a chat message or `/translate`. Groups have none: LINE only offers it in 1:1 chats. It shows only
   while the user is looking at the chat, and a failed request for it is logged (`loading animation failed`)
   and ignored.
+- Images (1:1 chat, owner only): a photo is downloaded from LINE (`api-data.line.me`, max 5 MB, JPEG/PNG/WebP/GIF, 10 s)
+  and sent to `AI_MODEL` with a short "describe this" prompt in the sender's LINE language; the answer is quoted.
+  Ask your question first, then send the photo: the question is in the history. `AI_MODEL` must accept images
+  (vision); otherwise the bot answers with the usual AI-failure text. The image is never stored or logged: the history keeps
+  `[image]` plus the answer. Images in a group are ignored (LINE sends no mention with an image); other users get the
+  DM notice. An image from an external provider, too large or in another format gets a short "could not read" reply.
 - Long answers are split into up to 5 messages of at most 5000 characters (LINE's limits), at a paragraph, line or sentence break when possible.
 - Every reply to a text message quotes that message (LINE quote); a split answer quotes it in the first part only. The join notice is not a quote.
 - Chat text is sent to whatever provider your 9router model or combo uses. Choose accordingly.
